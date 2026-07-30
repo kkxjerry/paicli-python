@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .context import ContextController
 from .llm_client import LlmClient
 from .memory import MemoryManager
 from .runtime import CancellationToken
@@ -33,6 +34,7 @@ class Agent:
         on_event: EventHandler | None = None,
         memory: MemoryManager | None = None,
         cancellation: CancellationToken | None = None,
+        context: ContextController | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -44,6 +46,7 @@ class Agent:
         self.memory = memory
         # 未传入时为该 Agent 创建独立令牌，避免多 Agent 意外共享取消状态。
         self.cancellation = cancellation or CancellationToken()
+        self.context = context
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -60,9 +63,12 @@ class Agent:
             # 启用 MemoryManager 后，messages 可能已压缩旧消息并注入长期记忆。
             # 每次调模型前检查，取消后不再发新请求。
             self.cancellation.check()
-            messages = (
-                self.memory.prepare(self.history) if self.memory else self.history
-            )
+            if self.context:
+                messages = self.context.prepare(self.history, self.memory)
+            else:
+                messages = (
+                    self.memory.prepare(self.history) if self.memory else self.history
+                )
             response = self.client.chat(messages, self.tools.definitions())
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
