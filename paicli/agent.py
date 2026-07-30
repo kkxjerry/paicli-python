@@ -6,6 +6,7 @@ import json
 from typing import Any, Callable
 
 from .context import ContextController
+from .images import ImageAttachment, multimodal_user_message
 from .llm_client import LlmClient
 from .lsp import LspDiagnosticFormatter, LspManager
 from .memory import MemoryManager
@@ -54,12 +55,17 @@ class Agent:
             {"role": "system", "content": system_prompt}
         ]
 
-    def run(self, user_input: str) -> str:
+    def run(
+        self,
+        user_input: str,
+        *,
+        images: tuple[ImageAttachment, ...] = (),
+    ) -> str:
         """Run ReAct until the model returns an answer without tool calls."""
 
         if not user_input.strip():
             raise ValueError("user_input cannot be empty")
-        self.history.append({"role": "user", "content": user_input})
+        self.history.append(multimodal_user_message(user_input, images))
 
         for _step in range(1, self.max_steps + 1):
             self.cancellation.check()
