@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -74,6 +75,35 @@ class ToolRegistry:
             return f"Tool error: {exc}"
         except Exception as exc:
             return f"Tool error: {type(exc).__name__}: {exc}"
+
+    def execute_many(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float = 60,
+    ) -> list[str]:
+        """Execute independent calls concurrently and preserve input order."""
+
+        if not calls:
+            return []
+        executor = ThreadPoolExecutor(max_workers=min(len(calls), 8))
+        futures = [
+            executor.submit(self.execute, name, arguments)
+            for name, arguments in calls
+        ]
+        results: list[str] = []
+        try:
+            for future in futures:
+                try:
+                    results.append(future.result(timeout=timeout_seconds))
+                except TimeoutError:
+                    future.cancel()
+                    results.append(
+                        f"Tool error: timed out after {timeout_seconds:g} seconds"
+                    )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return results
 
     def _register(self, tool: ToolSpec) -> None:
         if tool.name in self._tools:
