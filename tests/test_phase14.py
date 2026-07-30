@@ -22,6 +22,7 @@ class Phase14Test(unittest.TestCase):
 
         self.assertIs(first, second)
         self.assertNotEqual(first.id, isolated.id)
+        self.assertEqual(2, len(manager.active_sessions()))
 
     def test_save_memory_tool_persists_explicit_fact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

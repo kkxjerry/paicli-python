@@ -1,55 +1,70 @@
-# PaiCLI Python Phase 1
+# PaiCLI Python
 
-一个用于学习的最小 ReAct 编程 Agent。它只实现第一期主链路，不包含
-Plan、Memory、RAG、MCP、Skill、Multi-Agent 或 TUI。
+PaiCLI Java 项目的 22 期 Python 学习实现。每一期都有独立 Git 提交和
+`phase-xx` 标签，可以从最小 ReAct 循环逐步读到完整 Agent 工程。
 
-## 主流程
+这不是逐行翻译 Java，而是保留每一期的核心设计，用 Python 标准库实现
+可运行、可测试的最小版本。
+
+## 从第一期开始
+
+```bash
+git switch --detach phase-01
+python3 -m unittest discover -s tests -v
+```
+
+看完后进入第二期：
+
+```bash
+git switch --detach phase-02
+git diff phase-01..phase-02
+python3 -m unittest discover -s tests -v
+```
+
+回到完整版本：
+
+```bash
+git switch develop
+```
+
+不要只数项目总行数。每次只看当前阶段新增的文件和测试：
+
+```bash
+git diff --stat phase-06..phase-07
+git diff phase-06..phase-07 -- paicli/agent.py paicli/tools.py
+```
+
+完整阶段索引见 [PHASES.md](PHASES.md)。
+
+## 核心主链路
+
+`paicli/agent.py` 中的 `Agent.run()` 始终是主干：
 
 ```text
 用户输入
-  -> Agent 把消息和工具定义发送给 LLM
-  -> LLM 返回普通回答或 tool_calls
-  -> ToolRegistry 执行工具
-  -> Agent 把 tool 结果追加到历史
-  -> 再次调用 LLM
-  -> LLM 不再调用工具时结束
+  -> 组装上下文
+  -> 调用模型
+  -> 收到 tool_calls
+  -> 并行执行工具
+  -> 回灌 tool 结果
+  -> 没有 tool_calls 时结束
 ```
 
-核心循环位于 `paicli/agent.py`：
+其他模块都在这条主链路周围解决一个具体问题：
 
-```python
-for _step in range(1, self.max_steps + 1):
-    response = self.client.chat(self.history, self.tools.definitions())
+- `planning.py`、`multi_agent.py`：复杂任务如何拆分和协作。
+- `memory.py`、`rag.py`、`context.py`：模型应该看到哪些上下文。
+- `policy.py`、`snapshot.py`：写文件和执行命令如何可控、可恢复。
+- `mcp.py`、`mcp_resources.py`、`skills.py`：能力如何扩展。
+- `runtime.py`、`rendering.py`、`interaction.py`：如何成为可用的 CLI 产品。
 
-    if not response.tool_calls:
-        return response.content
+## 测试
 
-    for call in response.tool_calls:
-        result = self.tools.execute(call.name, call.arguments)
-        self.history.append({
-            "role": "tool",
-            "tool_call_id": call.id,
-            "content": result,
-        })
-```
-
-## 阅读顺序
-
-1. `paicli/agent.py`：先理解完整 ReAct 循环。
-2. `tests/test_agent.py`：用假模型观察一次工具调用如何回灌。
-3. `paicli/tools.py`：理解工具的 schema 与 handler 如何绑定。
-4. `paicli/llm_client.py`：最后看 HTTP 请求和供应商协议。
-5. `paicli/__main__.py`：CLI 只是外壳。
-
-## 运行测试
-
-项目核心只使用 Python 标准库：
+项目核心只使用 Python 标准库。完整测试不需要 API Key，也不访问外部网络：
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
-
-测试使用 `FakeClient`，不需要 API Key，也不会访问网络。
 
 ## 连接模型
 
@@ -57,7 +72,7 @@ python3 -m unittest discover -s tests -v
 cp .env.example .env
 ```
 
-编辑 `.env`：
+旧的通用 OpenAI-compatible 配置：
 
 ```dotenv
 PAICLI_API_KEY=your-key
@@ -65,28 +80,33 @@ PAICLI_MODEL=your-model
 PAICLI_BASE_URL=https://your-provider.example/v1
 ```
 
-运行交互模式：
+或者使用第 8 期的 provider 工厂：
 
-```bash
-python3 -m paicli
+```dotenv
+DEEPSEEK_API_KEY=your-key
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
-运行单次任务：
-
 ```bash
-python3 -m paicli -p "读取 README.md 并用一句话总结"
+python3 -m paicli --provider deepseek
 ```
 
-Shell 工具默认关闭。明确需要时才能启用：
+图片输入使用第 21 期语法：
+
+```bash
+python3 -m paicli -p '解释这张截图 @image:screen.png'
+```
+
+Shell 默认关闭，需要时显式开启：
 
 ```bash
 python3 -m paicli --allow-shell
 ```
 
-## 第一阶段只需要回答的问题
+## 安全边界
 
-- 为什么必须把 assistant 的 `tool_calls` 保存进历史？
-- 为什么 tool 消息必须带回相同的 `tool_call_id`？
-- 模型如何从 JSON Schema 得知参数格式？
-- 为什么没有工具调用就代表 ReAct 可以结束？
-- 为什么工具错误也应该作为字符串回灌模型？
+- 文件、图片和快照路径不能越过 `--project-root`。
+- Shell 默认关闭，第 6 期还会拒绝明显破坏性命令。
+- Web 工具拒绝本地地址、私网 IP 和非 HTTP(S) 协议。
+- Runtime API 只监听 `127.0.0.1`。
+- Chrome DevTools MCP 配置只生成启动参数，不会自行启动浏览器或进程。

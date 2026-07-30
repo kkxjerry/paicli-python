@@ -283,6 +283,18 @@ class RuntimeApiServer:
                     {**asdict(task), "status": task.status.value},
                 )
 
+            def do_DELETE(self) -> None:
+                if not self.path.startswith("/tasks/"):
+                    self.send_error(404)
+                    return
+                task_id = self.path.removeprefix("/tasks/")
+                try:
+                    cancelled = manager.cancel(task_id)
+                except KeyError:
+                    self.send_error(404)
+                    return
+                self._json(200, {"id": task_id, "cancelled": cancelled})
+
             def log_message(self, _format: str, *_args: object) -> None:
                 return None
 

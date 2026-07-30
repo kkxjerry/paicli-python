@@ -129,10 +129,14 @@ class BrowserSessionManager:
     ) -> BrowserSession:
         now = time.time()
         if mode is BrowserMode.REUSE:
-            existing = self._sessions.get(endpoint)
-            if existing and now - existing.last_used_at <= self.idle_ttl_seconds:
-                existing.touch()
-                return existing
+            for existing in self._sessions.values():
+                if (
+                    existing.endpoint == endpoint
+                    and existing.mode is BrowserMode.REUSE
+                    and now - existing.last_used_at <= self.idle_ttl_seconds
+                ):
+                    existing.touch()
+                    return existing
 
         session = BrowserSession(
             id=uuid.uuid4().hex,
@@ -141,11 +145,15 @@ class BrowserSessionManager:
             created_at=now,
             last_used_at=now,
         )
-        self._sessions[endpoint] = session
+        self._sessions[session.id] = session
         return session
 
     def disconnect(self, endpoint: str) -> None:
-        self._sessions.pop(endpoint, None)
+        self._sessions = {
+            session_id: session
+            for session_id, session in self._sessions.items()
+            if session.endpoint != endpoint
+        }
 
     def active_sessions(self) -> list[BrowserSession]:
         return list(self._sessions.values())

@@ -63,8 +63,8 @@ class Agent:
     ) -> str:
         """Run ReAct until the model returns an answer without tool calls."""
 
-        if not user_input.strip():
-            raise ValueError("user_input cannot be empty")
+        if not user_input.strip() and not images:
+            raise ValueError("user_input and images cannot both be empty")
         self.history.append(multimodal_user_message(user_input, images))
 
         for _step in range(1, self.max_steps + 1):
