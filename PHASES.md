@@ -4,7 +4,7 @@
 
 | 期数 | 核心能力 | 先看测试 | 再看实现 |
 |---:|---|---|---|
-| 01 | ReAct + Tool Call | `tests/test_agent.py` | `paicli/agent.py`、`tools.py` |
+| 01 | ReAct + Tool Call（推荐 `phase-01-cn`） | `tests/test_agent.py` | `paicli/agent.py`、`tools.py` |
 | 02 | Plan-and-Execute + DAG | `tests/test_planning.py` | `paicli/planning.py` |
 | 03 | 短期/长期记忆 + 压缩 | `tests/test_memory.py` | `paicli/memory.py` |
 | 04 | 代码分块 + RAG 检索 | `tests/test_rag.py` | `paicli/rag.py` |

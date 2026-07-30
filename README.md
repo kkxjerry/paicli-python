@@ -9,7 +9,7 @@ PaiCLI Java 项目的 22 期 Python 学习实现。每一期都有独立 Git 提
 ## 从第一期开始
 
 ```bash
-git switch --detach phase-01
+git switch --detach phase-01-cn
 python3 -m unittest discover -s tests -v
 ```
 
@@ -26,6 +26,9 @@ python3 -m unittest discover -s tests -v
 ```bash
 git switch develop
 ```
+
+`phase-01` 保留最初的精简源码，`phase-01-cn` 是逻辑相同、补齐中文注释的
+学习版本。第一次阅读建议直接使用 `phase-01-cn`。
 
 不要只数项目总行数。每次只看当前阶段新增的文件和测试：
 
