@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .llm_client import LlmClient
 from .memory import MemoryManager
+from .runtime import CancellationToken
 from .tools import ToolRegistry
 
 EventHandler = Callable[[str, str], None]
@@ -31,6 +32,7 @@ class Agent:
         max_steps: int = 20,
         on_event: EventHandler | None = None,
         memory: MemoryManager | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -40,6 +42,7 @@ class Agent:
         self.on_event = on_event or (lambda _kind, _text: None)
         # memory 是可选的：不传时保持 Phase 01 的全量 history 行为。
         self.memory = memory
+        self.cancellation = cancellation or CancellationToken()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -54,6 +57,7 @@ class Agent:
         for _step in range(1, self.max_steps + 1):
             # history 始终保留完整对话；messages 是本轮真正传给 LLM 的上下文。
             # 启用 MemoryManager 后，messages 可能已压缩旧消息并注入长期记忆。
+            self.cancellation.check()
             messages = (
                 self.memory.prepare(self.history) if self.memory else self.history
             )
@@ -92,6 +96,7 @@ class Agent:
 
             # execute_many 虽然并行，但保持输入顺序，所以可以通过 zip 正确回灌 call/result。
             for call, result in zip(response.tool_calls, results, strict=True):
+                self.cancellation.check()
                 self.on_event("result", result)
                 self.history.append(
                     {
