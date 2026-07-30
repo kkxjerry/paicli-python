@@ -75,7 +75,18 @@ class Agent:
 
             for call in response.tool_calls:
                 self.on_event("tool", f"{call.name} {call.arguments}")
-                result = self.tools.execute(call.name, call.arguments)
+
+            calls = [
+                (call.name, call.arguments) for call in response.tool_calls
+            ]
+            if hasattr(self.tools, "execute_many"):
+                results = self.tools.execute_many(calls)
+            else:
+                results = [
+                    self.tools.execute(name, arguments) for name, arguments in calls
+                ]
+
+            for call, result in zip(response.tool_calls, results, strict=True):
                 self.on_event("result", result)
                 self.history.append(
                     {
