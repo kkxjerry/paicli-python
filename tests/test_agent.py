@@ -11,6 +11,8 @@ from paicli.tools import ToolRegistry
 
 
 class FakeClient:
+    """用预设响应代替真实模型，使 ReAct 流程测试不依赖网络和 API Key。"""
+
     def __init__(self, responses: list[ChatResponse]) -> None:
         self.responses = responses
         self.requests: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
@@ -20,23 +22,29 @@ class FakeClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ChatResponse:
+        # 保存每次请求，测试可以检查第二次调用是否已经带上 tool 结果。
         self.requests.append((list(messages), list(tools)))
         return self.responses.pop(0)
 
 
 class AgentTest(unittest.TestCase):
     def test_tool_result_is_fed_back_before_final_answer(self) -> None:
+        """模型先调用 read_file，看到文件内容后再给出最终答案。"""
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            # 这个文件就是稍后 read_file 工具返回的观察结果。
             (root / "hello.txt").write_text("hello from tool", encoding="utf-8")
             client = FakeClient(
                 [
+                    # 第一次模型响应：不直接回答，而是要求调用 read_file。
                     ChatResponse(
                         content="",
                         tool_calls=(
                             ToolCall("call-1", "read_file", '{"path":"hello.txt"}'),
                         ),
                     ),
+                    # 第二次模型响应：已经看到工具结果，因此返回最终答案。
                     ChatResponse(content="The file says hello from tool."),
                 ]
             )
@@ -45,6 +53,7 @@ class AgentTest(unittest.TestCase):
             answer = agent.run("What does hello.txt say?")
 
             self.assertEqual("The file says hello from tool.", answer)
+            # 这是第一期最关键的断言：工具调用和工具结果都进入了消息链。
             self.assertEqual(
                 ["system", "user", "assistant", "tool", "assistant"],
                 [message["role"] for message in agent.history],
@@ -54,6 +63,8 @@ class AgentTest(unittest.TestCase):
             self.assertEqual(2, len(client.requests))
 
     def test_loop_limit_stops_repeated_tool_calls(self) -> None:
+        """模型一直不结束时，max_steps 会阻止无限循环。"""
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             client = FakeClient(
@@ -72,4 +83,3 @@ class AgentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
