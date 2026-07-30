@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .llm_client import LlmClient
+from .memory import MemoryManager
 from .tools import ToolRegistry
 
 EventHandler = Callable[[str, str], None]
@@ -29,6 +30,7 @@ class Agent:
         *,
         max_steps: int = 20,
         on_event: EventHandler | None = None,
+        memory: MemoryManager | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -36,6 +38,7 @@ class Agent:
         self.tools = tools
         self.max_steps = max_steps
         self.on_event = on_event or (lambda _kind, _text: None)
+        self.memory = memory
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -48,7 +51,10 @@ class Agent:
         self.history.append({"role": "user", "content": user_input})
 
         for _step in range(1, self.max_steps + 1):
-            response = self.client.chat(self.history, self.tools.definitions())
+            messages = (
+                self.memory.prepare(self.history) if self.memory else self.history
+            )
+            response = self.client.chat(messages, self.tools.definitions())
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content,
@@ -85,4 +91,3 @@ class Agent:
         """Start a new conversation while keeping the system prompt."""
 
         self.history = [self.history[0]]
-
