@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .llm_client import LlmClient
 from .memory import MemoryManager
+from .runtime import CancellationToken
 from .tools import ToolRegistry
 
 EventHandler = Callable[[str, str], None]
@@ -31,6 +32,7 @@ class Agent:
         max_steps: int = 20,
         on_event: EventHandler | None = None,
         memory: MemoryManager | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -39,6 +41,7 @@ class Agent:
         self.max_steps = max_steps
         self.on_event = on_event or (lambda _kind, _text: None)
         self.memory = memory
+        self.cancellation = cancellation or CancellationToken()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -51,6 +54,7 @@ class Agent:
         self.history.append({"role": "user", "content": user_input})
 
         for _step in range(1, self.max_steps + 1):
+            self.cancellation.check()
             messages = (
                 self.memory.prepare(self.history) if self.memory else self.history
             )
@@ -84,6 +88,7 @@ class Agent:
                 ]
 
             for call, result in zip(response.tool_calls, results, strict=True):
+                self.cancellation.check()
                 self.on_event("result", result)
                 self.history.append(
                     {
