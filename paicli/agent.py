@@ -38,6 +38,7 @@ class Agent:
         cancellation: CancellationToken | None = None,
         context: ContextController | None = None,
         lsp: LspManager | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -50,7 +51,7 @@ class Agent:
         self.context = context
         self.lsp = lsp
         self.history: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT}
+            {"role": "system", "content": system_prompt}
         ]
 
     def run(self, user_input: str) -> str:
