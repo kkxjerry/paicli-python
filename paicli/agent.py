@@ -70,9 +70,9 @@ class Agent:
         images 已由 ImageProcessor 完成安全校验，这里只负责组装多模态用户消息。
         """
 
-        if not user_input.strip():
-            raise ValueError("user_input cannot be empty")
-        # 有图时 content 是 parts 列表，无图时仍是普通字符串。
+        if not user_input.strip() and not images:
+            raise ValueError("user_input and images cannot both be empty")
+        # 允许“只发图片”；有图时 content 是 parts 列表，无图时仍是普通字符串。
         self.history.append(multimodal_user_message(user_input, images))
 
         for _step in range(1, self.max_steps + 1):

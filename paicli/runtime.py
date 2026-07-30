@@ -350,6 +350,19 @@ class RuntimeApiServer:
                     {**asdict(task), "status": task.status.value},
                 )
 
+            def do_DELETE(self) -> None:
+                # DELETE /tasks/{id} 发送协作式取消；响应中告知本次是否真的改变状态。
+                if not self.path.startswith("/tasks/"):
+                    self.send_error(404)
+                    return
+                task_id = self.path.removeprefix("/tasks/")
+                try:
+                    cancelled = manager.cancel(task_id)
+                except KeyError:
+                    self.send_error(404)
+                    return
+                self._json(200, {"id": task_id, "cancelled": cancelled})
+
             def log_message(self, _format: str, *_args: object) -> None:
                 # 禁用 BaseHTTPRequestHandler 默认的 stderr 访问日志，避免打乱 CLI UI。
                 return None

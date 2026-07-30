@@ -154,11 +154,15 @@ class BrowserSessionManager:
     ) -> BrowserSession:
         now = time.time()
         if mode is BrowserMode.REUSE:
-            # REUSE 模式下，同 endpoint 且未超过空闲 TTL 就返回同一个对象。
-            existing = self._sessions.get(endpoint)
-            if existing and now - existing.last_used_at <= self.idle_ttl_seconds:
-                existing.touch()
-                return existing
+            # 字典按 session id 存储，所以要遍历查找同 endpoint 的可复用会话。
+            for existing in self._sessions.values():
+                if (
+                    existing.endpoint == endpoint
+                    and existing.mode is BrowserMode.REUSE
+                    and now - existing.last_used_at <= self.idle_ttl_seconds
+                ):
+                    existing.touch()
+                    return existing
 
         # ISOLATED 模式，或者旧会话已过期，都会生成新 id。
         session = BrowserSession(
@@ -168,13 +172,17 @@ class BrowserSessionManager:
             created_at=now,
             last_used_at=now,
         )
-        # 同一 endpoint 只记录最新的会话；这不是多会话池。
-        self._sessions[endpoint] = session
+        # 按唯一 id 保存，因此同 endpoint 可同时存在多个 ISOLATED 会话。
+        self._sessions[session.id] = session
         return session
 
     def disconnect(self, endpoint: str) -> None:
-        # pop(..., None) 使“重复断开”也是安全的。
-        self._sessions.pop(endpoint, None)
+        # 断开某 endpoint 会移除它的全部复用/隔离会话；找不到时安全保持原状。
+        self._sessions = {
+            session_id: session
+            for session_id, session in self._sessions.items()
+            if session.endpoint != endpoint
+        }
 
     def active_sessions(self) -> list[BrowserSession]:
         # 返回新 list，避免调用者直接改写内部字典。

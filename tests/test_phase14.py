@@ -27,6 +27,8 @@ class Phase14Test(unittest.TestCase):
         # Assert：不仅 id 相同，而且复用的就是同一个 Python 对象。
         self.assertIs(first, second)
         self.assertNotEqual(first.id, isolated.id)
+        # Phase 22 修正：管理器应同时保留复用会话和隔离会话。
+        self.assertEqual(2, len(manager.active_sessions()))
 
     def test_save_memory_tool_persists_explicit_fact(self) -> None:
         """模型调用 save_memory 后，内容应真正写入 JSONL 长期记忆。"""

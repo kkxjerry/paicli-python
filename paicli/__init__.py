@@ -1,8 +1,10 @@
-"""Minimal Phase 1 ReAct coding agent."""
+"""PaiCLI Python: a coding agent built across 22 learning phases."""
 
 from .agent import Agent, AgentLoopError
 from .llm_client import ChatResponse, OpenAICompatibleClient, ToolCall
 from .tools import ToolRegistry
+
+__version__ = "0.22.0"
 
 __all__ = [
     "Agent",
@@ -11,5 +13,5 @@ __all__ = [
     "OpenAICompatibleClient",
     "ToolCall",
     "ToolRegistry",
+    "__version__",
 ]
-
