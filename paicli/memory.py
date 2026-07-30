@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .tools import ToolRegistry, ToolSpec
+
 SummaryFunction = Callable[[list[dict[str, Any]]], str]
 
 
@@ -186,3 +188,36 @@ class MemoryManager:
                     },
                 )
         return prepared
+
+
+def register_memory_tool(
+    registry: ToolRegistry,
+    long_term: LongTermMemory,
+) -> None:
+    """Expose explicit durable memory without saving model guesses implicitly."""
+
+    def save_memory(arguments: dict[str, Any]) -> str:
+        content = str(arguments["content"]).strip()
+        if not content:
+            raise ValueError("memory content cannot be empty")
+        tags = tuple(str(tag) for tag in arguments.get("tags", []))
+        long_term.save(content, tags)
+        return "Memory saved."
+
+    registry.register(
+        ToolSpec(
+            "save_memory",
+            "Persist an explicit user preference or durable project fact.",
+            registry.object_schema(
+                {
+                    "content": {"type": "string"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                required=["content"],
+            ),
+            save_memory,
+        )
+    )

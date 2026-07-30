@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
@@ -111,3 +112,40 @@ class ChromeDevToolsMcpConfig:
             self.package,
             f"--browser-url={self.browser_url}",
         ]
+
+
+class BrowserSessionManager:
+    """Reuses an existing CDP session instead of launching a new browser."""
+
+    def __init__(self, *, idle_ttl_seconds: float = 900) -> None:
+        self.idle_ttl_seconds = idle_ttl_seconds
+        self._sessions: dict[str, BrowserSession] = {}
+
+    def connect(
+        self,
+        endpoint: str,
+        *,
+        mode: BrowserMode = BrowserMode.REUSE,
+    ) -> BrowserSession:
+        now = time.time()
+        if mode is BrowserMode.REUSE:
+            existing = self._sessions.get(endpoint)
+            if existing and now - existing.last_used_at <= self.idle_ttl_seconds:
+                existing.touch()
+                return existing
+
+        session = BrowserSession(
+            id=uuid.uuid4().hex,
+            endpoint=endpoint,
+            mode=mode,
+            created_at=now,
+            last_used_at=now,
+        )
+        self._sessions[endpoint] = session
+        return session
+
+    def disconnect(self, endpoint: str) -> None:
+        self._sessions.pop(endpoint, None)
+
+    def active_sessions(self) -> list[BrowserSession]:
+        return list(self._sessions.values())
