@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from .context import ContextController
 from .llm_client import LlmClient
+from .lsp import LspDiagnosticFormatter, LspManager
 from .memory import MemoryManager
 from .runtime import CancellationToken
 from .tools import ToolRegistry
@@ -35,6 +37,7 @@ class Agent:
         memory: MemoryManager | None = None,
         cancellation: CancellationToken | None = None,
         context: ContextController | None = None,
+        lsp: LspManager | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -48,6 +51,7 @@ class Agent:
         self.cancellation = cancellation or CancellationToken()
         # ContextController 是 MemoryManager 之上的自适应策略层。
         self.context = context
+        self.lsp = lsp
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -117,6 +121,7 @@ class Agent:
                         "content": result,
                     }
                 )
+                self._report_diagnostics(call.name, call.arguments)
 
         raise AgentLoopError(
             f"model did not return a final answer within {self.max_steps} steps"
@@ -126,3 +131,14 @@ class Agent:
         """Start a new conversation while keeping the system prompt."""
 
         self.history = [self.history[0]]
+
+    def _report_diagnostics(self, tool_name: str, arguments_json: str) -> None:
+        if self.lsp is None or tool_name != "write_file":
+            return
+        try:
+            path = str(json.loads(arguments_json)["path"])
+            report = self.lsp.diagnostics_for(path)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return
+        if report.diagnostics:
+            self.on_event("diagnostics", LspDiagnosticFormatter.format(report))
