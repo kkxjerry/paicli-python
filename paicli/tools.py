@@ -53,6 +53,11 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def register(self, tool: ToolSpec) -> None:
+        """Add an extension tool while keeping duplicate checks centralized."""
+
+        self._register(tool)
+
     def execute(self, name: str, arguments_json: str) -> str:
         """Parse model arguments and run one registered tool."""
 
@@ -156,6 +161,8 @@ class ToolRegistry:
             "required": required or [],
             "additionalProperties": False,
         }
+
+    object_schema = _object_schema
 
     def _safe_path(self, raw_path: str) -> Path:
         candidate = (self.project_root / raw_path).resolve()
