@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .context import ContextController
 from .llm_client import LlmClient
 from .memory import MemoryManager
 from .runtime import CancellationToken
@@ -33,6 +34,7 @@ class Agent:
         on_event: EventHandler | None = None,
         memory: MemoryManager | None = None,
         cancellation: CancellationToken | None = None,
+        context: ContextController | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
@@ -42,6 +44,7 @@ class Agent:
         self.on_event = on_event or (lambda _kind, _text: None)
         self.memory = memory
         self.cancellation = cancellation or CancellationToken()
+        self.context = context
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -55,9 +58,12 @@ class Agent:
 
         for _step in range(1, self.max_steps + 1):
             self.cancellation.check()
-            messages = (
-                self.memory.prepare(self.history) if self.memory else self.history
-            )
+            if self.context:
+                messages = self.context.prepare(self.history, self.memory)
+            else:
+                messages = (
+                    self.memory.prepare(self.history) if self.memory else self.history
+                )
             response = self.client.chat(messages, self.tools.definitions())
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
