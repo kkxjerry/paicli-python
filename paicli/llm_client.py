@@ -7,7 +7,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 
 class LlmError(RuntimeError):
@@ -144,3 +144,79 @@ class OpenAICompatibleClient:
             tool_calls=calls,
         )
 
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: str
+    api_key_env: str
+    default_model: str
+    default_base_url: str
+    context_window: int
+    supports_prompt_caching: bool = False
+
+
+class LlmClientFactory:
+    """Phase 8 provider strategy for OpenAI-compatible model APIs."""
+
+    PROVIDERS = {
+        "glm": ProviderConfig(
+            "glm",
+            "GLM_API_KEY",
+            "glm-4-flash",
+            "https://open.bigmodel.cn/api/paas/v4",
+            128_000,
+        ),
+        "deepseek": ProviderConfig(
+            "deepseek",
+            "DEEPSEEK_API_KEY",
+            "deepseek-chat",
+            "https://api.deepseek.com",
+            128_000,
+            True,
+        ),
+        "stepfun": ProviderConfig(
+            "stepfun",
+            "STEPFUN_API_KEY",
+            "step-2-16k",
+            "https://api.stepfun.com/v1",
+            16_000,
+        ),
+        "kimi": ProviderConfig(
+            "kimi",
+            "KIMI_API_KEY",
+            "kimi-k2",
+            "https://api.moonshot.cn/v1",
+            256_000,
+            True,
+        ),
+    }
+
+    @classmethod
+    def create(
+        cls,
+        provider: str,
+        *,
+        environ: Mapping[str, str] | None = None,
+    ) -> OpenAICompatibleClient:
+        environment = os.environ if environ is None else environ
+        name = provider.strip().lower()
+        if name not in cls.PROVIDERS:
+            supported = ", ".join(sorted(cls.PROVIDERS))
+            raise ValueError(f"unknown provider {provider!r}; choose: {supported}")
+        config = cls.PROVIDERS[name]
+        prefix = name.upper()
+        api_key = environment.get(config.api_key_env, "").strip()
+        if not api_key:
+            raise ValueError(f"{config.api_key_env} is missing")
+        client = OpenAICompatibleClient(
+            api_key=api_key,
+            model=environment.get(f"{prefix}_MODEL", config.default_model),
+            base_url=environment.get(
+                f"{prefix}_BASE_URL",
+                config.default_base_url,
+            ),
+        )
+        client.provider = config.name
+        client.context_window = config.context_window
+        client.supports_prompt_caching = config.supports_prompt_caching
+        return client
