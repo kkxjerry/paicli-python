@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
@@ -132,3 +133,49 @@ class ChromeDevToolsMcpConfig:
             self.package,
             f"--browser-url={self.browser_url}",
         ]
+
+
+class BrowserSessionManager:
+    """管理已连接的 CDP 会话，优先复用而不是反复创建。
+
+    本类只管理 BrowserSession 元数据，不会真正启动 Chrome，也不检测
+    endpoint 是否真的可连接。
+    """
+
+    def __init__(self, *, idle_ttl_seconds: float = 900) -> None:
+        self.idle_ttl_seconds = idle_ttl_seconds
+        self._sessions: dict[str, BrowserSession] = {}
+
+    def connect(
+        self,
+        endpoint: str,
+        *,
+        mode: BrowserMode = BrowserMode.REUSE,
+    ) -> BrowserSession:
+        now = time.time()
+        if mode is BrowserMode.REUSE:
+            # REUSE 模式下，同 endpoint 且未超过空闲 TTL 就返回同一个对象。
+            existing = self._sessions.get(endpoint)
+            if existing and now - existing.last_used_at <= self.idle_ttl_seconds:
+                existing.touch()
+                return existing
+
+        # ISOLATED 模式，或者旧会话已过期，都会生成新 id。
+        session = BrowserSession(
+            id=uuid.uuid4().hex,
+            endpoint=endpoint,
+            mode=mode,
+            created_at=now,
+            last_used_at=now,
+        )
+        # 同一 endpoint 只记录最新的会话；这不是多会话池。
+        self._sessions[endpoint] = session
+        return session
+
+    def disconnect(self, endpoint: str) -> None:
+        # pop(..., None) 使“重复断开”也是安全的。
+        self._sessions.pop(endpoint, None)
+
+    def active_sessions(self) -> list[BrowserSession]:
+        # 返回新 list，避免调用者直接改写内部字典。
+        return list(self._sessions.values())
