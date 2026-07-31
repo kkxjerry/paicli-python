@@ -82,26 +82,31 @@ class ToolRegistry:
         *,
         timeout_seconds: float = 60,
     ) -> list[str]:
-        """Execute independent calls concurrently and preserve input order."""
+        """并行执行互不依赖的工具调用，但返回顺序与输入保持一致。"""
 
         if not calls:
             return []
+        # 线程数不超过调用数，也不超过 8，避免模型一次返回大量调用时无限建线程。
         executor = ThreadPoolExecutor(max_workers=min(len(calls), 8))
+        # submit 会立即把所有任务交给线程池，这一步实现真正并发。
         futures = [
             executor.submit(self.execute, name, arguments)
             for name, arguments in calls
         ]
         results: list[str] = []
         try:
+            # futures 按输入顺序遍历，因此即使第二个先完成，返回结果仍不会乱序。
             for future in futures:
                 try:
                     results.append(future.result(timeout=timeout_seconds))
                 except TimeoutError:
+                    # cancel 只能取消还没开始的任务；已在运行的 Python 线程无法强制终止。
                     future.cancel()
                     results.append(
                         f"Tool error: timed out after {timeout_seconds:g} seconds"
                     )
         finally:
+            # 不等待超时任务结束，并取消尚未开始的 future。
             executor.shutdown(wait=False, cancel_futures=True)
         return results
 

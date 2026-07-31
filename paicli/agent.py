@@ -74,18 +74,23 @@ class Agent:
                 return response.content
 
             for call in response.tool_calls:
+                # 先统一发出工具开始事件，真正执行放在后面批量处理。
                 self.on_event("tool", f"{call.name} {call.arguments}")
 
+            # 将 ToolCall 对象转为 ToolRegistry.execute_many 需要的 (name, JSON) 元组。
             calls = [
                 (call.name, call.arguments) for call in response.tool_calls
             ]
             if hasattr(self.tools, "execute_many"):
+                # 原生 ToolRegistry 支持并行。
                 results = self.tools.execute_many(calls)
             else:
+                # HitlToolRegistry 等包装器暂无 execute_many，退化为按顺序执行。
                 results = [
                     self.tools.execute(name, arguments) for name, arguments in calls
                 ]
 
+            # execute_many 虽然并行，但保持输入顺序，所以可以通过 zip 正确回灌 call/result。
             for call, result in zip(response.tool_calls, results, strict=True):
                 self.on_event("result", result)
                 self.history.append(
