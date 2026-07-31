@@ -54,6 +54,7 @@ class Agent:
         self.tools = tools
         self.max_steps = max_steps
         self.on_event = on_event or (lambda _kind, _text: None)
+        # memory 是可选的：不传时保持 Phase 01 的全量 history 行为。
         self.memory = memory
         self.cancellation = cancellation or CancellationToken()
         self.context = context
@@ -89,6 +90,8 @@ class Agent:
                     self.memory.prepare(self.history) if self.memory else self.history
                 )
 
+            # history 始终保留完整对话；messages 是本轮真正传给 LLM 的上下文。
+            # 启用 MemoryManager 后，messages 可能已压缩旧消息并注入长期记忆。
             # 把“消息历史 + 工具 JSON Schema”交给模型。
             # 模型只能提出调用哪个工具，本身不会执行本地 Python 函数。
             response = self.client.chat(messages, self.tools.definitions())
