@@ -16,7 +16,10 @@ from paicli.tools import ToolRegistry
 
 class PolicyTest(unittest.TestCase):
     def test_write_requires_approval(self) -> None:
+        """验证 write_file 会先进入 HITL，获得允许后才真正写文件。"""
+
         with tempfile.TemporaryDirectory() as directory:
+            # Arrange：calls 记录审批器收到的请求，模拟用户点击允许。
             calls = []
             guarded = HitlToolRegistry(
                 ToolRegistry(directory),
@@ -24,15 +27,19 @@ class PolicyTest(unittest.TestCase):
                 or ApprovalResult(ApprovalDecision.APPROVE),
             )
 
+            # Act：从审批包装层执行写文件。
             result = guarded.execute(
                 "write_file",
                 '{"path":"a.txt","content":"ok"}',
             )
 
+            # Assert：文件写入成功，且审批器确实收到 write_file。
             self.assertEqual("Wrote a.txt", result)
             self.assertEqual("write_file", calls[0].tool_name)
 
     def test_policy_blocks_destructive_command_before_hitl(self) -> None:
+        """验证毁灭性命令在进入人工审批之前就被硬策略拦截。"""
+
         with tempfile.TemporaryDirectory() as directory:
             approvals = []
             guarded = HitlToolRegistry(
@@ -41,15 +48,19 @@ class PolicyTest(unittest.TestCase):
                 or ApprovalResult(ApprovalDecision.APPROVE),
             )
 
+            # Act：即使 Shell 已开启、模拟审批器会允许，该命令仍应被拒绝。
             result = guarded.execute(
                 "execute_command",
                 '{"command":"sudo rm -rf /"}',
             )
 
+            # Assert：返回拒绝，并且 approvals 仍为空，说明人工审批没被调用。
             self.assertIn("denied", result)
             self.assertEqual([], approvals)
 
     def test_denial_is_written_to_audit_log(self) -> None:
+        """验证用户拒绝工具后，结果和审批来源会持久化到审计日志。"""
+
         with tempfile.TemporaryDirectory() as directory:
             audit_dir = Path(directory, "audit")
             guarded = HitlToolRegistry(
@@ -58,8 +69,10 @@ class PolicyTest(unittest.TestCase):
                 audit_log=AuditLog(audit_dir),
             )
 
+            # Act：审批器固定返回 DENY。
             guarded.execute("write_file", '{"path":"a","content":"b"}')
 
+            # Assert：读取当天 JSONL 的唯一事件，确认是 HITL 拒绝。
             event = json.loads(next(audit_dir.iterdir()).read_text(encoding="utf-8"))
             self.assertEqual("deny", event["outcome"])
             self.assertEqual("hitl", event["approver"])
