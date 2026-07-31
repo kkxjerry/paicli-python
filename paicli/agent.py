@@ -46,6 +46,7 @@ class Agent:
         self.memory = memory
         # 未传入时为该 Agent 创建独立令牌，避免多 Agent 意外共享取消状态。
         self.cancellation = cancellation or CancellationToken()
+        # ContextController 是 MemoryManager 之上的自适应策略层。
         self.context = context
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
@@ -64,6 +65,7 @@ class Agent:
             # 每次调模型前检查，取消后不再发新请求。
             self.cancellation.check()
             if self.context:
+                # 有 Controller 时由它决定是否调用 memory，并执行预算检查。
                 messages = self.context.prepare(self.history, self.memory)
             else:
                 messages = (
