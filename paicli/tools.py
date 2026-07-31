@@ -67,7 +67,7 @@ class ToolRegistry:
         return list(self._tools)
 
     def register(self, tool: ToolSpec) -> None:
-        """Add an extension tool while keeping duplicate checks centralized."""
+        """对外提供扩展工具注册入口，重复名称检查仍统一由 _register 处理。"""
 
         self._register(tool)
 
@@ -219,6 +219,7 @@ class ToolRegistry:
             "additionalProperties": False,
         }
 
+    # 将原本内部的 schema 构造器公开，让 RAG 等扩展模块复用相同 JSON Schema 格式。
     object_schema = _object_schema
 
     def _safe_path(self, raw_path: str) -> Path:
