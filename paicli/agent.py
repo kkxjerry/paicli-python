@@ -53,6 +53,7 @@ class Agent:
         # ContextController 是 MemoryManager 之上的自适应策略层。
         self.context = context
         self.lsp = lsp
+        # system_prompt 可以由 PromptAssembler 预先组装，Agent 只负责放在历史首位。
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
         ]
