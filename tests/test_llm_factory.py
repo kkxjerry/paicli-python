@@ -29,6 +29,35 @@ class LlmFactoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown provider"):
             LlmClientFactory.create("missing", environ={})
 
+    def test_builds_vllm_without_api_key(self) -> None:
+        """A40 上的 vLLM 可以不设 API Key，但必须明确配置模型和地址。"""
+
+        # Arrange + Act：只提供将来服务器就绪后能确定的两项配置。
+        client = LlmClientFactory.create(
+            "vllm",
+            environ={
+                "VLLM_MODEL": "local-tool-model",
+                "VLLM_BASE_URL": "http://a40.example:8000/v1",
+            },
+        )
+
+        # Assert：内网无鉴权模式使用占位 Key，其他连接信息保持不变。
+        self.assertEqual("vllm", client.provider)
+        self.assertEqual("EMPTY", client.api_key)
+        self.assertEqual("local-tool-model", client.model)
+        self.assertEqual("http://a40.example:8000/v1", client.base_url)
+
+    def test_vllm_requires_explicit_endpoint_and_model(self) -> None:
+        """服务器未准备好时立即报配置错误，不误连本机端口。"""
+
+        with self.assertRaisesRegex(ValueError, "VLLM_MODEL"):
+            LlmClientFactory.create("vllm", environ={})
+        with self.assertRaisesRegex(ValueError, "VLLM_BASE_URL"):
+            LlmClientFactory.create(
+                "vllm",
+                environ={"VLLM_MODEL": "local-tool-model"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

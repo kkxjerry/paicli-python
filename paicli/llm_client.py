@@ -171,6 +171,8 @@ class ProviderConfig:
     default_base_url: str
     context_window: int
     supports_prompt_caching: bool = False
+    # 云端 API 必须有密钥；vLLM 内网服务可以不启用鉴权。
+    requires_api_key: bool = True
 
 
 class LlmClientFactory:
@@ -211,6 +213,15 @@ class LlmClientFactory:
             256_000,
             True,
         ),
+        "vllm": ProviderConfig(
+            "vllm",
+            "VLLM_API_KEY",
+            "",
+            "",
+            32_000,
+            False,
+            False,
+        ),
     }
 
     @classmethod
@@ -231,15 +242,23 @@ class LlmClientFactory:
         # provider=deepseek 对应可选覆盖变量 DEEPSEEK_MODEL/DEEPSEEK_BASE_URL。
         prefix = name.upper()
         api_key = environment.get(config.api_key_env, "").strip()
-        if not api_key:
+        if config.requires_api_key and not api_key:
             raise ValueError(f"{config.api_key_env} is missing")
+        # vLLM 未启用 --api-key 时也接受这个占位值；它不是真实密钥。
+        api_key = api_key or "EMPTY"
+        model = environment.get(f"{prefix}_MODEL", config.default_model).strip()
+        base_url = environment.get(
+            f"{prefix}_BASE_URL",
+            config.default_base_url,
+        ).strip()
+        if not model:
+            raise ValueError(f"{prefix}_MODEL is missing")
+        if not base_url:
+            raise ValueError(f"{prefix}_BASE_URL is missing")
         client = OpenAICompatibleClient(
             api_key=api_key,
-            model=environment.get(f"{prefix}_MODEL", config.default_model),
-            base_url=environment.get(
-                f"{prefix}_BASE_URL",
-                config.default_base_url,
-            ),
+            model=model,
+            base_url=base_url,
         )
         # 这些元数据不影响 HTTP 调用，但后续 ContextManager 可据此选择上下文策略。
         client.provider = config.name

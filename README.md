@@ -94,6 +94,16 @@ DEEPSEEK_MODEL=deepseek-chat
 python3 -m paicli --provider deepseek
 ```
 
+先不运行 Agent，只检查真实模型对话和 Tool Calling：
+
+```bash
+python3 -m paicli --provider deepseek --check-model chat
+python3 -m paicli --provider deepseek --check-model tools
+```
+
+A40 上的 vLLM 服务可用后，填写 `VLLM_BASE_URL` 和 `VLLM_MODEL`，再将
+provider 换成 `vllm`。详细说明见 [真实模型与 vLLM 接入笔记](docs/real-model-and-vllm.md)。
+
 图片输入使用第 21 期语法：
 
 ```bash

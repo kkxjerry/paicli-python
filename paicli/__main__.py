@@ -14,6 +14,7 @@ from .agent import Agent, AgentLoopError
 from .images import ImageAttachment, ImageProcessor
 from .interaction import CliCommand, CliCommandParser, PaiCliHistory, normalize_input
 from .llm_client import LlmClientFactory, LlmError, OpenAICompatibleClient
+from .model_probe import ProbeMode, probe_model
 from .rendering import StatusInfo, create_renderer
 from .runtime import CancelledError
 from .tools import ToolRegistry
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         choices=sorted(LlmClientFactory.PROVIDERS),
-        help="Use a configured GLM, DeepSeek, StepFun, or Kimi provider",
+        help="Use a configured cloud provider or an OpenAI-compatible vLLM server",
     )
     parser.add_argument(
         "--renderer",
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-shell",
         action="store_true",
         help="Allow the model to execute shell commands",
+    )
+    parser.add_argument(
+        "--check-model",
+        choices=("chat", "tools"),
+        help="Call the configured real model once and exit",
     )
     return parser
 
@@ -91,6 +97,10 @@ def main() -> int:
     except ValueError as exc:
         print(f"Configuration error: {exc}")
         return 2
+
+    # 连通性检查不启动 Agent，也不执行任何本地工具。
+    if args.check_model:
+        return run_model_probe(client, args.check_model)
 
     # project_root 决定文件、图片等工具能访问的最大目录边界。
     # Shell 必须通过命令行或环境变量显式开启，默认只暴露低风险工具。
@@ -183,7 +193,7 @@ def handle_command(
     elif command.name == "model":
         # 切模型只替换 client，保留已有对话历史和工具注册表。
         if len(command.arguments) != 1:
-            print("Usage: /model <glm|deepseek|stepfun|kimi>")
+            print("Usage: /model <glm|deepseek|stepfun|kimi|vllm>")
         else:
             try:
                 agent.client = LlmClientFactory.create(command.arguments[0])
@@ -209,6 +219,19 @@ def run_once(
     except (AgentLoopError, CancelledError, LlmError, ValueError) as exc:
         print(f"\nError: {exc}")
         return 1
+
+
+def run_model_probe(client: OpenAICompatibleClient, mode: ProbeMode) -> int:
+    """执行一次真实模型检查，将结果转换为 CLI 退出码。"""
+
+    try:
+        result = probe_model(client, mode)
+    except (LlmError, ValueError) as exc:
+        print(f"Model check failed: {exc}")
+        return 1
+    label = "passed" if result.ok else "failed"
+    print(f"Model check {label}: {result.detail}")
+    return 0 if result.ok else 1
 
 
 if __name__ == "__main__":
