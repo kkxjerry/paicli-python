@@ -38,6 +38,7 @@ class Agent:
         self.tools = tools
         self.max_steps = max_steps
         self.on_event = on_event or (lambda _kind, _text: None)
+        # memory 是可选的：不传时保持 Phase 01 的全量 history 行为。
         self.memory = memory
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
@@ -51,6 +52,8 @@ class Agent:
         self.history.append({"role": "user", "content": user_input})
 
         for _step in range(1, self.max_steps + 1):
+            # history 始终保留完整对话；messages 是本轮真正传给 LLM 的上下文。
+            # 启用 MemoryManager 后，messages 可能已压缩旧消息并注入长期记忆。
             messages = (
                 self.memory.prepare(self.history) if self.memory else self.history
             )
