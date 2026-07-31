@@ -65,22 +65,22 @@
 
 ## 常用比较命令
 
-查看某期新增文件：
+查看某期新增文件（中文注释版使用 `-cn` 标签）：
 
 ```bash
-git diff --name-status phase-14..phase-15
+git diff --name-status phase-14-cn..phase-15-cn
 ```
 
 查看某期代码量：
 
 ```bash
-git diff --stat phase-14..phase-15
+git diff --stat phase-14-cn..phase-15-cn
 ```
 
 不切换分支直接读取某一期文件：
 
 ```bash
-git show phase-03:paicli/memory.py
+git show phase-03-cn:paicli/memory.py
 ```
 
 运行当前标签的测试：
