@@ -1,4 +1,8 @@
-"""第一期 CLI 外壳：读取配置、创建依赖，并把用户输入交给 Agent。"""
+"""Phase 22：学习版 Agent 的命令行入口与交互循环。
+
+这个文件负责“组装”：读配置、创建 Client/Tools/Agent/Renderer，然后进入
+单次 -p 模式或持续 REPL。业务逻辑尽量留在各自模块，便于单元测试。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from .tools import ToolRegistry
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
-    """读取简单的 KEY=VALUE 配置，但不覆盖系统中已经存在的环境变量。"""
+    """加载简单 KEY=VALUE，但不覆盖进程环境中已存在的值。"""
 
     if not path.is_file():
         return
@@ -25,13 +29,14 @@ def load_dotenv(path: Path = Path(".env")) -> None:
         # 忽略空行、注释和不符合 KEY=VALUE 格式的内容。
         if not line or line.startswith("#") or "=" not in line:
             continue
+        # 只分割第一个 =，所以 value 中可继续包含 =。这不是完整 dotenv 解析器。
         key, value = line.split("=", 1)
-        # setdefault 保证真正的系统环境变量拥有更高优先级。
+        # setdefault 保证真正的进程环境变量比 .env 优先。
         os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
 def env_flag(name: str, default: bool = False) -> bool:
-    """把常见的布尔环境变量写法转换为 bool。"""
+    """把常见的真值字符串转成 bool，环境变量缺失时用默认值。"""
 
     value = os.getenv(name)
     if value is None:
@@ -40,7 +45,7 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """定义 CLI 支持的命令行参数。"""
+    """定义 CLI 启动参数，argparse 负责类型转换和 --help。"""
 
     parser = argparse.ArgumentParser(description="PaiCLI Python learning agent")
     parser.add_argument("-p", "--prompt", help="Run one prompt and exit")
@@ -70,15 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    """组装 LLM、ToolRegistry 和 Agent，并启动单次或交互模式。"""
+    """组装所有依赖，运行单次 prompt 或持续交互循环。"""
 
-    # 先加载 .env，再解析和使用配置。
+    # 先读 .env，再解析参数，provider 工厂后面才能读到密钥和模型配置。
     load_dotenv()
     args = build_parser().parse_args()
 
     try:
-        # LLM 客户端负责网络协议，Agent 不直接读取 API Key。
-        # 指定 provider 时使用第 8 期工厂，否则保留第一期通用配置。
+        # --provider 选中预置 provider；未指定时使用通用 OpenAI-compatible 环境变量。
         client = (
             LlmClientFactory.create(args.provider)
             if args.provider
@@ -88,26 +92,27 @@ def main() -> int:
         print(f"Configuration error: {exc}")
         return 2
 
-    # project_root 决定文件工具能够访问的最大目录范围。
+    # project_root 决定文件、图片等工具能访问的最大目录边界。
+    # Shell 必须通过命令行或环境变量显式开启，默认只暴露低风险工具。
     tools = ToolRegistry(
         args.project_root,
         allow_shell=args.allow_shell or env_flag("PAICLI_ALLOW_SHELL"),
     )
     renderer = create_renderer(args.renderer)
-
-    # 依赖由 CLI 创建并注入 Agent，测试时可以替换成 FakeClient。
+    # 依赖在 CLI 组装后注入 Agent，所以单元测试可以使用 FakeClient/FakeTool。
     agent = Agent(
         client,
         tools,
         max_steps=args.max_steps,
+        # Agent.run 会自己返回 answer，run_once 统一打印，因此事件回调不重复渲染 answer。
         on_event=lambda kind, text: (
             renderer.event(kind, text) if kind != "answer" else None
         ),
     )
     image_processor = ImageProcessor(args.project_root)
 
-    # -p/--prompt 适合脚本调用：只执行一次，随后退出。
     if args.prompt:
+        # 非交互模式：解析 @image 后只运行一轮，退出码交给 shell/CI。
         try:
             prompt, images = image_processor.from_prompt(args.prompt)
         except ValueError as exc:
@@ -115,13 +120,14 @@ def main() -> int:
             return 2
         return run_once(agent, prompt, tuple(images))
 
-    # 没有 -p 时进入交互式 REPL；下面的历史和状态栏来自后续阶段。
+    # 没有 -p 时才进入交互式 REPL，并加载本地输入历史。
     provider = getattr(client, "provider", "custom")
     renderer.status(
         StatusInfo(provider, client.model, "react", "phase 22")
     )
     print("\nCommands: /help, /tools, /model, /context, /history, /clear, /exit")
     history = PaiCliHistory(Path.home() / ".paicli" / "history.json")
+    # 交互模式：命令在本地处理，普通输入才发给 Agent。
     while True:
         try:
             prompt = normalize_input(input("\n> "))
@@ -131,8 +137,6 @@ def main() -> int:
 
         if not prompt:
             continue
-
-        # Slash 命令由 CLI 自己处理，不需要消耗一次模型请求。
         try:
             command = CliCommandParser.parse(prompt)
         except ValueError as exc:
@@ -142,6 +146,7 @@ def main() -> int:
             if handle_command(command, agent, tools, history):
                 return 0
             continue
+        # 只持久化真正的用户 prompt，斜杠命令不进入对话历史文件。
         history.add(prompt)
         try:
             clean_prompt, images = image_processor.from_prompt(prompt)
@@ -157,6 +162,8 @@ def handle_command(
     tools: ToolRegistry,
     history: PaiCliHistory,
 ) -> bool:
+    """执行一条本地斜杠命令；只有 /exit 返回 True 结束 REPL。"""
+
     if command.name == "exit":
         return True
     if command.name == "clear":
@@ -174,6 +181,7 @@ def handle_command(
             f"messages={len(agent.history)} max_steps={agent.max_steps}"
         )
     elif command.name == "model":
+        # 切模型只替换 client，保留已有对话历史和工具注册表。
         if len(command.arguments) != 1:
             print("Usage: /model <glm|deepseek|stepfun|kimi>")
         else:
@@ -192,7 +200,7 @@ def run_once(
     prompt: str,
     images: tuple[ImageAttachment, ...] = (),
 ) -> int:
-    """执行一轮用户任务，并把领域异常转换成 CLI 退出码。"""
+    """运行一轮 Agent，将预期内错误转换为用户可读信息和退出码。"""
 
     try:
         answer = agent.run(prompt, images=images)
@@ -204,5 +212,5 @@ def run_once(
 
 
 if __name__ == "__main__":
-    # python -m paicli 最终会从这里进入 main()。
+    # python -m paicli 最终从这里进入 main()，并将返回值交给 shell。
     raise SystemExit(main())

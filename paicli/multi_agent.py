@@ -1,4 +1,18 @@
-"""Phase 5: role-based multi-agent coordination."""
+"""Phase 5：基于角色的多 Agent 协作。
+
+    ExecutionPlan(DAG)
+            |
+            v
+    AgentOrchestrator 选择可执行任务
+            |
+            v
+    assignments 决定交给哪个角色
+            |
+            v
+    Worker 执行并通过 MessageBus 广播结果
+
+本期的 Worker 只是 Python 函数，不是多个独立 LLM 实例。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +24,8 @@ from .planning import ExecutionPlan, Task, TaskStatus
 
 
 class AgentRole(str, Enum):
+    """团队内预置的职责类型。"""
+
     PLANNER = "planner"
     RESEARCHER = "researcher"
     CODER = "coder"
@@ -18,6 +34,8 @@ class AgentRole(str, Enum):
 
 @dataclass(frozen=True)
 class AgentMessage:
+    """角色之间传递的不可变消息。"""
+
     sender: AgentRole
     recipient: AgentRole
     content: str
@@ -25,21 +43,27 @@ class AgentMessage:
 
 
 class MessageBus:
+    """最小内存消息总线：保留全部消息，按接收角色过滤。"""
+
     def __init__(self) -> None:
         self.messages: list[AgentMessage] = []
 
     def send(self, message: AgentMessage) -> None:
+        # 本期没有队列/网络，发送只是追加到内存 list。
         self.messages.append(message)
 
     def for_role(self, role: AgentRole) -> list[AgentMessage]:
         return [message for message in self.messages if message.recipient is role]
 
 
+# Worker 接收任务和发给本角色的历史消息，返回执行结果。
 Worker = Callable[[Task, list[AgentMessage]], str]
 
 
 @dataclass
 class AgentTeam:
+    """维护“角色 -> Worker 函数”的映射。"""
+
     workers: dict[AgentRole, Worker] = field(default_factory=dict)
 
     def register(self, role: AgentRole, worker: Worker) -> None:
@@ -49,7 +73,7 @@ class AgentTeam:
 
 
 class AgentOrchestrator:
-    """Assigns DAG tasks to roles and shares results through a message bus."""
+    """把 DAG 任务分配给角色，并通过消息总线共享结果。"""
 
     def __init__(
         self,
@@ -64,8 +88,10 @@ class AgentOrchestrator:
 
     def run(self, plan: ExecutionPlan) -> ExecutionPlan:
         while not plan.is_finished():
+            # 复用 Phase 02 的 DAG 逻辑：只处理依赖全部完成的任务。
             ready = plan.ready_tasks()
             if not ready:
+                # 仍有 PENDING 却无可执行任务，剩余任务已无法继续。
                 self._skip_pending(plan)
                 break
             for task in ready:
@@ -76,17 +102,21 @@ class AgentOrchestrator:
         return plan
 
     def _run_task(self, task: Task) -> None:
+        # 未显式分配的任务默认交给 CODER。
         role = self.assignments.get(task.id, AgentRole.CODER)
         worker = self.team.workers.get(role)
         if worker is None:
+            # 任务指定了角色，但团队没有为该角色注册执行函数。
             task.status = TaskStatus.FAILED
             task.result = f"no worker registered for {role.value}"
             return
 
         task.status = TaskStatus.RUNNING
         try:
+            # 只把“接收者是当前角色”的消息交给 Worker。
             task.result = worker(task, self.bus.for_role(role))
             task.status = TaskStatus.COMPLETED
+            # 任务成功后，将结果发给团队中其他所有角色。
             for recipient in self.team.workers:
                 if recipient is not role:
                     self.bus.send(
@@ -98,6 +128,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _skip_pending(plan: ExecutionPlan) -> None:
+        # 任意任务失败后直接跳过所有剩余任务，比 Phase 02 的精确依赖传播更粗粒度。
         for task in plan.tasks:
             if task.status is TaskStatus.PENDING:
                 task.status = TaskStatus.SKIPPED

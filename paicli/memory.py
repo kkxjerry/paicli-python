@@ -241,16 +241,23 @@ def register_memory_tool(
     registry: ToolRegistry,
     long_term: LongTermMemory,
 ) -> None:
-    """Expose explicit durable memory without saving model guesses implicitly."""
+    """把“明确保存长期记忆”注册成 Agent 可调用的工具。
+
+    这里故意不会把每句对话都自动写进长期记忆。只有当模型明确调用
+    save_memory 时才持久化，可以减少模型猜测、临时信息和敏感数据被误存。
+    """
 
     def save_memory(arguments: dict[str, Any]) -> str:
+        # content 是必填项；去掉空白后仍为空时不允许写入。
         content = str(arguments["content"]).strip()
         if not content:
             raise ValueError("memory content cannot be empty")
+        # JSON 数组在内部转为不可变 tuple，与 MemoryEntry.tags 的类型一致。
         tags = tuple(str(tag) for tag in arguments.get("tags", []))
         long_term.save(content, tags)
         return "Memory saved."
 
+    # ToolSpec 会同时被用于：告诉模型工具定义，以及把调用路由到 save_memory。
     registry.register(
         ToolSpec(
             "save_memory",

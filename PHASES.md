@@ -4,7 +4,7 @@
 
 | 期数 | 核心能力 | 先看测试 | 再看实现 |
 |---:|---|---|---|
-| 01 | ReAct + Tool Call（推荐 `phase-01-cn`） | `tests/test_agent.py` | `paicli/agent.py`、`tools.py` |
+| 01 | ReAct + Tool Call（`phase-01-cn`） | `tests/test_agent.py` | `paicli/agent.py`、`tools.py` |
 | 02 | Plan-and-Execute + DAG | `tests/test_planning.py` | `paicli/planning.py` |
 | 03 | 短期/长期记忆 + 压缩 | `tests/test_memory.py` | `paicli/memory.py` |
 | 04 | 代码分块 + RAG 检索 | `tests/test_rag.py` | `paicli/rag.py` |
@@ -31,7 +31,7 @@
 
 ### 第一段：Agent 主循环
 
-先看 `phase-01`、`phase-02`、`phase-07`。回答三个问题：
+先看 `phase-01-cn`、`phase-02-cn`、`phase-07-cn`。回答三个问题：
 
 1. 模型为什么不是直接执行工具？
 2. 为什么工具结果必须重新放回消息历史？
@@ -65,22 +65,22 @@
 
 ## 常用比较命令
 
-查看某期新增文件：
+查看某期新增文件（中文注释版使用 `-cn` 标签）：
 
 ```bash
-git diff --name-status phase-14..phase-15
+git diff --name-status phase-14-cn..phase-15-cn
 ```
 
 查看某期代码量：
 
 ```bash
-git diff --stat phase-14..phase-15
+git diff --stat phase-14-cn..phase-15-cn
 ```
 
 不切换分支直接读取某一期文件：
 
 ```bash
-git show phase-03:paicli/memory.py
+git show phase-03-cn:paicli/memory.py
 ```
 
 运行当前标签的测试：

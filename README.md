@@ -1,7 +1,7 @@
 # PaiCLI Python
 
 PaiCLI Java 项目的 22 期 Python 学习实现。每一期都有独立 Git 提交和
-`phase-xx` 标签，可以从最小 ReAct 循环逐步读到完整 Agent 工程。
+`phase-xx-cn` 中文注释标签，可从最小 ReAct 循环逐步读到完整 Agent 工程。
 
 这不是逐行翻译 Java，而是保留每一期的核心设计，用 Python 标准库实现
 可运行、可测试的最小版本。
@@ -16,8 +16,8 @@ python3 -m unittest discover -s tests -v
 看完后进入第二期：
 
 ```bash
-git switch --detach phase-02
-git diff phase-01..phase-02
+git diff phase-01-cn..phase-02-cn
+git switch --detach phase-02-cn
 python3 -m unittest discover -s tests -v
 ```
 
@@ -27,14 +27,14 @@ python3 -m unittest discover -s tests -v
 git switch develop
 ```
 
-`phase-01` 保留最初的精简源码，`phase-01-cn` 是逻辑相同、补齐中文注释的
-学习版本。第一次阅读建议直接使用 `phase-01-cn`。
+`phase-xx` 保留原始精简实现，`phase-xx-cn` 是功能相同、补齐中文注释的
+学习版。第一次阅读建议使用 `-cn` 标签。
 
 不要只数项目总行数。每次只看当前阶段新增的文件和测试：
 
 ```bash
-git diff --stat phase-06..phase-07
-git diff phase-06..phase-07 -- paicli/agent.py paicli/tools.py
+git diff --stat phase-06-cn..phase-07-cn
+git diff phase-06-cn..phase-07-cn -- paicli/agent.py paicli/tools.py
 ```
 
 完整阶段索引见 [PHASES.md](PHASES.md)。

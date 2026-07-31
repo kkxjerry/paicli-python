@@ -1,4 +1,22 @@
-"""Phase 15: discoverable, lazily loaded SKILL.md instructions."""
+"""Phase 15：可发现、按需加载的 SKILL.md 技能系统。
+
+核心流程：
+
+    扫描各个 roots 下的 SKILL.md
+                 |
+                 v
+       解析 frontmatter 元数据
+                 |
+                 v
+       先只把名称+描述放进索引
+                 |
+       模型调用 load_skill(name)
+                 |
+                 v
+       把完整 instructions 注入上下文
+
+“懒加载”的目的是：技能很多时，不必一开始就消耗大量 token。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +30,8 @@ from .tools import ToolRegistry, ToolSpec
 
 @dataclass(frozen=True)
 class Skill:
+    """从一个 SKILL.md 解析出来的不可变技能定义。"""
+
     name: str
     description: str
     instructions: str
@@ -20,10 +40,13 @@ class Skill:
 
 
 class SkillFrontmatterParser:
+    """解析简化版 YAML frontmatter，不依赖完整 YAML 库。"""
+
     @staticmethod
     def parse(path: str | Path) -> Skill:
         skill_path = Path(path)
         text = skill_path.read_text(encoding="utf-8")
+        # 文件必须以 --- 开头，否则无法区分元数据和正文。
         if not text.startswith("---\n"):
             raise ValueError(f"{skill_path} has no frontmatter")
         try:
@@ -31,6 +54,7 @@ class SkillFrontmatterParser:
         except ValueError as exc:
             raise ValueError(f"{skill_path} has unclosed frontmatter") from exc
 
+        # 只支持“单行 key: value”，不支持嵌套 YAML、多行值等语法。
         metadata: dict[str, str] = {}
         for line in header.splitlines():
             if not line.strip() or line.lstrip().startswith("#") or ":" not in line:
@@ -41,6 +65,7 @@ class SkillFrontmatterParser:
         description = metadata.get("description", "").strip()
         if not name or not description:
             raise ValueError("skill requires name and description")
+        # allowed-tools 形如 [read_file, execute_command]，这里手工拆分。
         raw_tools = metadata.get("allowed-tools", "")
         tools = tuple(
             item.strip()
@@ -51,6 +76,8 @@ class SkillFrontmatterParser:
 
 
 class SkillRegistry:
+    """从多个目录发现技能，并按 name 提供查询。"""
+
     def __init__(self, roots: Iterable[str | Path]) -> None:
         self.roots = [Path(root) for root in roots]
         self._skills: dict[str, Skill] = {}
@@ -60,8 +87,10 @@ class SkillRegistry:
         for root in self.roots:
             if not root.is_dir():
                 continue
+            # rglob 会递归扫描子目录；sorted 保证测试和输出稳定。
             for path in sorted(root.rglob("SKILL.md")):
                 skill = SkillFrontmatterParser.parse(path)
+                # 同名技能后发现的会覆盖先发现的，当前没有冲突告警。
                 discovered[skill.name] = skill
         self._skills = discovered
         return list(discovered.values())
@@ -73,6 +102,7 @@ class SkillRegistry:
             raise KeyError(f"unknown skill: {name}") from exc
 
     def index(self) -> str:
+        # 索引仅包含短描述，完整 instructions 等选中后再加载。
         return "\n".join(
             f"- {skill.name}: {skill.description}"
             for skill in sorted(self._skills.values(), key=lambda item: item.name)
@@ -80,6 +110,8 @@ class SkillRegistry:
 
 
 class SkillContextBuffer:
+    """记录当前会话已加载的技能，避免重复注入。"""
+
     def __init__(self) -> None:
         self.loaded: set[str] = set()
 
@@ -87,6 +119,7 @@ class SkillContextBuffer:
         if skill.name in self.loaded:
             return f"Skill {skill.name!r} is already loaded."
         self.loaded.add(skill.name)
+        # XML 样式边界让模型更容易区分技能指令和普通对话。
         return (
             f"<skill name=\"{skill.name}\">\n"
             f"{skill.instructions}\n"
@@ -98,12 +131,15 @@ class SkillContextBuffer:
 
 
 class SkillStateStore:
+    """用 JSON 保存“哪些技能已启用”，方便下次启动恢复。"""
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
     def save_enabled(self, names: set[str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
+            # set 不能直接 JSON 序列化，先排序也能使文件结果稳定。
             json.dumps({"enabled": sorted(names)}, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -120,6 +156,8 @@ def register_skill_tool(
     skills: SkillRegistry,
     buffer: SkillContextBuffer | None = None,
 ) -> SkillContextBuffer:
+    """注册 load_skill 工具，并返回可供外部观察的上下文缓冲区。"""
+
     context = buffer or SkillContextBuffer()
     tools.register(
         ToolSpec(
@@ -129,11 +167,13 @@ def register_skill_tool(
                 {
                     "name": {
                         "type": "string",
+                        # enum 把合法名称直接告诉模型，减少幻觉出不存在的技能。
                         "enum": sorted(skills._skills),
                     }
                 },
                 required=["name"],
             ),
+            # 执行时才从注册表取出完整指令，这就是懒加载的落点。
             lambda arguments: context.load(skills.get(str(arguments["name"]))),
         )
     )
