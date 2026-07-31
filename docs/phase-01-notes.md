@@ -28,19 +28,19 @@ Phase01 只解决一个核心问题：
 | `paicli/tools.py` | 注册并执行本地工具 |
 | `paicli/llm_client.py` | 调用模型并统一响应结构 |
 | `paicli/__main__.py` | 读取配置并启动 CLI |
-| `tests/test_agent.py` | 使用 FakeClient 测试 Agent |
-| `tests/test_tools.py` | 测试文件工具与安全边界 |
 
 推荐阅读顺序：
 
 ```text
-test_agent.py
-  -> Agent.run()
+Agent.run()
   -> ToolRegistry.execute()
   -> ToolCall / ChatResponse / LlmClient
   -> OpenAICompatibleClient
   -> __main__.py
 ```
+
+测试相关内容单独整理在
+[Phase01 测试笔记](phase-01-testing-notes.md)。
 
 ## 3. 三个核心模型类型
 
@@ -117,7 +117,7 @@ response = self.client.chat(
 )
 ```
 
-发送给模型的是：
+⭐⭐⭐发送给模型的是：
 
 - 完整消息历史 `history`。
 - 当前可用工具的 JSON Schema。
@@ -126,7 +126,7 @@ response = self.client.chat(
 
 `response` 是方便 Python 处理的 `ChatResponse` 对象。
 
-`assistant_message` 是符合模型协议、能够放入历史的字典：
+⭐⭐⭐`assistant_message` 是符合模型协议、能够放入历史的字典：
 
 ```python
 assistant_message = {
@@ -135,7 +135,7 @@ assistant_message = {
 }
 ```
 
-如果模型要求调用工具，还要保存 `tool_calls`：
+⭐⭐⭐如果模型要求调用工具，还要保存 `tool_calls`：
 
 ```python
 assistant_message["tool_calls"] = [
@@ -164,7 +164,7 @@ result = self.tools.execute(
 
 Agent 根据工具名在 `ToolRegistry` 中找到本地处理函数。
 
-### 回灌工具结果
+### 回灌工具结果⭐⭐⭐
 
 ```python
 self.history.append({
@@ -284,113 +284,9 @@ self.on_event("answer", "最终回答")
 - 修改 history。
 - 改变 Agent 的执行判断。
 
-测试中没有传入 `on_event` 时，默认使用什么也不做的函数。
+没有传入 `on_event` 时，默认使用什么也不做的函数。
 
-## 9. FakeClient 测试
-
-单元测试不调用真实模型，而是提前准备两个响应：
-
-```python
-client = FakeClient([
-    ChatResponse(
-        content="",
-        tool_calls=(ToolCall(...),),
-    ),
-    ChatResponse(
-        content="The file says hello from tool.",
-    ),
-])
-```
-
-执行过程：
-
-```text
-第一次 chat()
-  -> pop 第一条响应
-  -> 要求调用 read_file
-
-Agent 执行 read_file 并回灌结果
-
-第二次 chat()
-  -> pop 第二条响应
-  -> 返回最终答案
-```
-
-测试中的第二条响应是预设的；真实环境中的第二条响应由模型根据工具结果现场
-生成。
-
-FakeClient 的价值：
-
-- 不需要 API Key。
-- 不访问网络。
-- 测试结果固定。
-- 可以检查 Agent 每次发送了哪些消息。
-
-## 10. unittest 基础
-
-一个测试通常分为三步：
-
-```text
-Arrange：准备环境和输入
-Act：执行目标代码
-Assert：验证实际结果
-```
-
-示例：
-
-```python
-class FileTest(unittest.TestCase):
-    def test_read_file(self) -> None:
-        # Arrange
-        registry = ToolRegistry(...)
-
-        # Act
-        result = registry.execute(...)
-
-        # Assert
-        self.assertEqual("expected", result)
-```
-
-当前项目使用 `unittest`，自动发现规则是：
-
-- 测试类继承 `unittest.TestCase`。
-- 测试方法以 `test_` 开头。
-
-常用断言：
-
-```python
-self.assertEqual(expected, actual)
-self.assertIn(part, whole)
-self.assertTrue(condition)
-self.assertFalse(condition)
-
-with self.assertRaises(ValueError):
-    operation()
-```
-
-## 11. 测试命令
-
-运行 Phase01 全部测试：
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-只运行 Agent 测试：
-
-```bash
-python3 -m unittest discover -s tests -p "test_agent.py" -v
-```
-
-只运行一个测试方法：
-
-```bash
-python3 -m unittest \
-  tests.test_agent.AgentTest.test_tool_result_is_fed_back_before_final_answer \
-  -v
-```
-
-## 12. Phase01 自检
+## 9. Phase01 自检
 
 学完后应该能够回答：
 
@@ -399,8 +295,7 @@ python3 -m unittest \
 3. 为什么 assistant 的 `tool_calls` 必须保存进 history？
 4. 为什么 tool 消息必须带相同的 `tool_call_id`？
 5. 为什么工具错误应该转换成字符串回灌模型？
-6. FakeClient 为什么要提前准备两个响应？
-7. `on_event` 会不会改变 Agent 的执行逻辑？
-8. `LlmClient Protocol` 为什么能让 FakeClient 替代真实客户端？
+6. `on_event` 会不会改变 Agent 的执行逻辑？
+7. `LlmClient Protocol` 如何隔离 Agent 与具体模型供应商？
 
 能够用自己的话回答这些问题，就可以进入 Phase02。
