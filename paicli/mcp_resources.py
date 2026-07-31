@@ -1,4 +1,8 @@
-"""Phase 11: MCP resources, mentions, notifications, and cancellation."""
+"""Phase 11：MCP Resources、@Mention、通知路由和取消。
+
+Tools 是“执行动作”，Resources 是“读取上下文资料”。
+@docs:file://guide.md 可被展开为 resource 文本后再发给模型。
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,8 @@ from .tools import ToolRegistry, ToolSpec
 
 @dataclass(frozen=True)
 class McpResourceDescriptor:
+    """resources/list 返回的资源元数据。"""
+
     uri: str
     name: str
     description: str = ""
@@ -21,12 +27,16 @@ class McpResourceDescriptor:
 
 @dataclass(frozen=True)
 class McpResourceContent:
+    """resources/read 返回的文本内容。"""
+
     uri: str
     text: str
     mime_type: str = ""
 
 
 class McpResourceCache:
+    """带 TTL 的内存资源缓存，避免频繁请求同一 MCP Resource。"""
+
     def __init__(self, ttl_seconds: float = 60) -> None:
         self.ttl_seconds = ttl_seconds
         self._items: dict[str, tuple[float, McpResourceContent]] = {}
@@ -36,6 +46,7 @@ class McpResourceCache:
         if not item:
             return None
         created_at, content = item
+        # monotonic 不受系统时钟调整影响，更适合计算 TTL。
         if time.monotonic() - created_at > self.ttl_seconds:
             self._items.pop(uri, None)
             return None
@@ -45,6 +56,7 @@ class McpResourceCache:
         self._items[content.uri] = (time.monotonic(), content)
 
     def invalidate(self, uri: str | None = None) -> None:
+        # uri=None 表示整个 Server 资源可能已变更，需清空全部缓存。
         if uri is None:
             self._items.clear()
         else:
@@ -52,6 +64,8 @@ class McpResourceCache:
 
 
 class McpResourceClient:
+    """在 McpClient JSON-RPC 之上提供 Resource 领域方法。"""
+
     def __init__(
         self,
         client: McpClient,
@@ -73,6 +87,7 @@ class McpResourceClient:
         ]
 
     def read_resource(self, uri: str) -> McpResourceContent:
+        # 缓存命中时不再调用 resources/read。
         cached = self.cache.get(uri)
         if cached:
             return cached
@@ -80,6 +95,7 @@ class McpResourceClient:
         contents = result.get("contents", [])
         if not contents:
             raise ValueError(f"MCP resource is empty: {uri}")
+        # MCP 可返回多个 content block，本期只取第一个文本块。
         item = contents[0]
         content = McpResourceContent(
             uri=str(item.get("uri", uri)),
@@ -90,6 +106,7 @@ class McpResourceClient:
         return content
 
     def register_tools(self, registry: ToolRegistry) -> list[str]:
+        # Resources 也包装为两个常规工具，使 Agent 可按需列出和读取。
         prefix = f"mcp__{self.client.name}"
         registry.register(
             ToolSpec(
@@ -121,12 +138,16 @@ class McpResourceClient:
 
 @dataclass(frozen=True)
 class ResourceMention:
+    """从 @server:uri 中解析出的结构化引用。"""
+
     server: str
     uri: str
     raw: str
 
 
 class AtMentionParser:
+    """识别消息中的 @MCP-resource 引用。"""
+
     PATTERN = re.compile(r"@([A-Za-z0-9_-]+):([^\s]+)")
 
     @classmethod
@@ -138,11 +159,14 @@ class AtMentionParser:
 
 
 class AtMentionExpander:
+    """通过注入的 reader 将 @Mention 替换为带来源标记的完整资源。"""
+
     def __init__(self, reader: Callable[[str, str], str]) -> None:
         self.reader = reader
 
     def expand(self, text: str) -> str:
         expanded = text
+        # 从后往前处理，概念上可避免前面替换影响后续引用。
         for mention in reversed(AtMentionParser.parse(text)):
             content = self.reader(mention.server, mention.uri)
             block = (
@@ -154,6 +178,8 @@ class AtMentionExpander:
 
 
 class NotificationRouter:
+    """将无 ID 的 MCP notification 按 method 分发给本地订阅者。"""
+
     def __init__(self) -> None:
         self._handlers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
 
@@ -162,9 +188,11 @@ class NotificationRouter:
         method: str,
         handler: Callable[[dict[str, Any]], None],
     ) -> None:
+        # 同一 method 允许多个 handler，按注册顺序执行。
         self._handlers.setdefault(method, []).append(handler)
 
     def route(self, message: dict[str, Any]) -> bool:
+        # 返回值表示是否至少有一个 handler 处理，便于上层记录未知通知。
         method = message.get("method")
         if not isinstance(method, str):
             return False

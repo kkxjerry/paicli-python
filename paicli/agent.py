@@ -42,6 +42,7 @@ class Agent:
         self.on_event = on_event or (lambda _kind, _text: None)
         # memory 是可选的：不传时保持 Phase 01 的全量 history 行为。
         self.memory = memory
+        # 未传入时为该 Agent 创建独立令牌，避免多 Agent 意外共享取消状态。
         self.cancellation = cancellation or CancellationToken()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
@@ -57,6 +58,7 @@ class Agent:
         for _step in range(1, self.max_steps + 1):
             # history 始终保留完整对话；messages 是本轮真正传给 LLM 的上下文。
             # 启用 MemoryManager 后，messages 可能已压缩旧消息并注入长期记忆。
+            # 每次调模型前检查，取消后不再发新请求。
             self.cancellation.check()
             messages = (
                 self.memory.prepare(self.history) if self.memory else self.history
@@ -96,6 +98,7 @@ class Agent:
 
             # execute_many 虽然并行，但保持输入顺序，所以可以通过 zip 正确回灌 call/result。
             for call, result in zip(response.tool_calls, results, strict=True):
+                # 工具可能运行很久，回灌结果前再给取消一次生效机会。
                 self.cancellation.check()
                 self.on_event("result", result)
                 self.history.append(
