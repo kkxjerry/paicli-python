@@ -133,12 +133,17 @@ class Agent:
         self.history = [self.history[0]]
 
     def _report_diagnostics(self, tool_name: str, arguments_json: str) -> None:
+        """write_file 成功后检查该文件，并用 diagnostics 事件回报问题。"""
+
+        # 只有写文件会改变源码；未配置 LSP 时保持以前的行为。
         if self.lsp is None or tool_name != "write_file":
             return
         try:
+            # arguments 是模型产生的 JSON，必须容错，诊断不应让主 Agent 循环崩溃。
             path = str(json.loads(arguments_json)["path"])
             report = self.lsp.diagnostics_for(path)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return
+        # 没有问题时不产生噪声事件。
         if report.diagnostics:
             self.on_event("diagnostics", LspDiagnosticFormatter.format(report))
