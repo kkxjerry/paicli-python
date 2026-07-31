@@ -147,6 +147,8 @@ class OpenAICompatibleClient:
 
 @dataclass(frozen=True)
 class ProviderConfig:
+    """一个模型服务商的默认连接信息和能力元数据。"""
+
     name: str
     api_key_env: str
     default_model: str
@@ -156,7 +158,11 @@ class ProviderConfig:
 
 
 class LlmClientFactory:
-    """Phase 8 provider strategy for OpenAI-compatible model APIs."""
+    """Phase 8：根据 provider 名称创建 OpenAI-compatible 客户端。
+
+    工厂屏蔽不同服务商的 API Key 环境变量、默认模型和 base URL。
+    它们仍必须提供兼容 OpenAI chat/completions 的 HTTP 接口。
+    """
 
     PROVIDERS = {
         "glm": ProviderConfig(
@@ -198,12 +204,15 @@ class LlmClientFactory:
         *,
         environ: Mapping[str, str] | None = None,
     ) -> OpenAICompatibleClient:
+        # 测试可传入独立 environ，避免修改进程的真实 os.environ。
         environment = os.environ if environ is None else environ
+        # 允许用户输入大小写混合和前后空格。
         name = provider.strip().lower()
         if name not in cls.PROVIDERS:
             supported = ", ".join(sorted(cls.PROVIDERS))
             raise ValueError(f"unknown provider {provider!r}; choose: {supported}")
         config = cls.PROVIDERS[name]
+        # provider=deepseek 对应可选覆盖变量 DEEPSEEK_MODEL/DEEPSEEK_BASE_URL。
         prefix = name.upper()
         api_key = environment.get(config.api_key_env, "").strip()
         if not api_key:
@@ -216,6 +225,7 @@ class LlmClientFactory:
                 config.default_base_url,
             ),
         )
+        # 这些元数据不影响 HTTP 调用，但后续 ContextManager 可据此选择上下文策略。
         client.provider = config.name
         client.context_window = config.context_window
         client.supports_prompt_caching = config.supports_prompt_caching
