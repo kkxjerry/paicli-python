@@ -1,5 +1,7 @@
 # PaiCLI Python
 
+[![CI](https://github.com/kkxjerry/paicli-python/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/kkxjerry/paicli-python/actions/workflows/ci.yml)
+
 PaiCLI Java 项目的 22 期 Python 学习实现。每一期都有独立 Git 提交和
 `phase-xx-cn` 中文注释标签，可从最小 ReAct 循环逐步读到完整 Agent 工程。
 
@@ -101,8 +103,9 @@ python3 -m paicli --provider deepseek --check-model chat
 python3 -m paicli --provider deepseek --check-model tools
 ```
 
-A40 上的 vLLM 服务可用后，填写 `VLLM_BASE_URL` 和 `VLLM_MODEL`，再将
-provider 换成 `vllm`。详细说明见 [真实模型与 vLLM 接入笔记](docs/real-model-and-vllm.md)。
+A40 上已部署 `Qwen3.5-9B` vLLM 服务，服务只监听服务器回环地址。
+通过 SSH 隧道连接后，将 provider 换成 `vllm`。详细说明见
+[真实模型与 vLLM 接入笔记](docs/real-model-and-vllm.md)。
 
 图片输入使用第 21 期语法：
 

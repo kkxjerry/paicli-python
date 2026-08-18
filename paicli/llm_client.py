@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
@@ -81,6 +83,13 @@ class OpenAICompatibleClient:
         # 去掉末尾 /，后面拼接路径时不会出现双斜杠。
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        # 本地 vLLM 常经过 SSH 隧道访问。如果机器设置了 HTTP_PROXY，
+        # urllib 可能把 127.0.0.1 也发给代理；回环地址应始终直连。
+        self._loopback_opener = (
+            urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            if _is_loopback_url(self.base_url)
+            else None
+        )
 
     @classmethod
     def from_env(cls) -> OpenAICompatibleClient:
@@ -127,10 +136,12 @@ class OpenAICompatibleClient:
 
         try:
             # urllib 是标准库，学习项目无需引入第三方 HTTP 库。
-            with urllib.request.urlopen(
-                request,
-                timeout=self.timeout_seconds,
-            ) as response:
+            open_request = (
+                self._loopback_opener.open
+                if self._loopback_opener is not None
+                else urllib.request.urlopen
+            )
+            with open_request(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             # HTTPError 仍可能携带服务端返回的详细错误正文。
@@ -159,6 +170,19 @@ class OpenAICompatibleClient:
             content=message.get("content") or "",
             tool_calls=calls,
         )
+
+
+def _is_loopback_url(url: str) -> bool:
+    """判断 API 地址是否指向本机，用于避免 SSH 隧道被代理劫持。"""
+
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # 普通域名仍按用户的 HTTP(S)_PROXY 配置访问。
+        return False
 
 
 @dataclass(frozen=True)

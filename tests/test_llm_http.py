@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
+from unittest.mock import patch
 
 from paicli.llm_client import OpenAICompatibleClient
 
@@ -92,3 +94,37 @@ class LlmHttpTest(unittest.TestCase):
         self.assertEqual("Bearer secret", RecordingHandler.authorization)
         self.assertEqual("read_file", response.tool_calls[0].name)
         self.assertEqual('{"path":"README.md"}', response.tool_calls[0].arguments)
+
+    def test_loopback_endpoint_ignores_environment_proxy(self) -> None:
+        """SSH 隧道的 127.0.0.1 请求必须直连，不能被系统代理接管。"""
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+
+        # 故意设置一个不可达的代理。如果客户端没有绕过它，请求会立即失败。
+        proxy_environment = {
+            "HTTP_PROXY": "http://127.0.0.1:1",
+            "http_proxy": "http://127.0.0.1:1",
+            "ALL_PROXY": "http://127.0.0.1:1",
+            "all_proxy": "http://127.0.0.1:1",
+        }
+        try:
+            with patch.dict(os.environ, proxy_environment, clear=False):
+                client = OpenAICompatibleClient(
+                    "secret",
+                    "test-model",
+                    f"http://{host}:{port}/v1",
+                    timeout_seconds=2,
+                )
+                response = client.chat(
+                    [{"role": "user", "content": "Read README"}],
+                    [],
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual("read_file", response.tool_calls[0].name)

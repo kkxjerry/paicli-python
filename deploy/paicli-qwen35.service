@@ -1,0 +1,19 @@
+[Unit]
+Description=PaiCLI Qwen3.5-9B vLLM service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/models/Qwen3.5-9B
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/paicli-vllm/bin/vllm serve /opt/models/Qwen3.5-9B --served-model-name Qwen/Qwen3.5-9B --host 127.0.0.1 --port 8000 --tensor-parallel-size 1 --max-model-len 32768 --gpu-memory-utilization 0.90 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=0
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

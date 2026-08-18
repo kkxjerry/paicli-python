@@ -46,14 +46,35 @@ python3 -m paicli --provider deepseek --check-model tools
 
 `tools` 检查只让模型生成 `probe_echo` 调用，不会真正运行 Shell 或写文件。
 
-## A40 vLLM 服务器就绪后
+## A40 vLLM 已部署
 
-现在不需要启动本地 Docker，也不将服务器地址硬编码到仓库。
-等 A40 上的 OpenAI-compatible vLLM 服务可用后，在 `.env` 中填：
+2026-08-01 在 A40 服务器完成了真实部署：
+
+- 模型：`/opt/models/Qwen3.5-9B`，对外模型名 `Qwen/Qwen3.5-9B`。
+- 运行环境：`/opt/paicli-vllm`，`vLLM 0.19.0 + PyTorch 2.10.0 cu128`。
+- 服务：`paicli-qwen35.service`，只监听 `127.0.0.1:8000`。
+- GPU：使用第 1 张 A40，其他两张卡不占用。
+- 上下文：32,768 tokens；启用 `qwen3` reasoning parser 和
+  `qwen3_coder` tool-call parser，保留多模态能力。
+
+`vLLM 0.26.0` 默认依赖 CUDA 13，但当前服务器驱动支持到 CUDA 12.8，
+因此部署固定在仍支持 Qwen3.5 的 `vLLM 0.19.0`，没有升级服务器驱动。
+对应的 systemd 配置留在 `deploy/paicli-qwen35.service`。
+
+### 本机连接
+
+服务不直接暴露到网络。本机先打开 SSH 隧道：
+
+```bash
+ssh -J <jump-host> -i ~/.ssh/<key-file> -p <ssh-port> \
+  -N -L 18000:127.0.0.1:8000 <user>@<a40-host>
+```
+
+再在 `.env` 中填：
 
 ```dotenv
-VLLM_BASE_URL=http://A40_SERVER:8000/v1
-VLLM_MODEL=the-served-model-name
+VLLM_BASE_URL=http://127.0.0.1:18000/v1
+VLLM_MODEL=Qwen/Qwen3.5-9B
 VLLM_API_KEY=
 ```
 
@@ -62,10 +83,33 @@ VLLM_API_KEY=
 ```bash
 python3 -m paicli --provider vllm --check-model chat
 python3 -m paicli --provider vllm --check-model tools
-python3 -m paicli --provider vllm -p '列出当前目录文件'
+python3 -m paicli --provider vllm -p '请使用 read_file 读取 README.md 的第一行'
 ```
 
 如果 `chat` 通过而 `tools` 失败，说明 HTTP 链路没问题，但模型本身、
 chat template 或 vLLM tool-call parser 尚未正确配置。
 
-图片输入要放在 Tool Calling 通过之后再测。它还要求所部署模型本身是视觉语言模型。
+### 单步调试真实全流程
+
+`tests/test_vllm_live.py` 是专门留给 IDE Debug 的真实集成测试。
+它默认跳过，打开 SSH 隧道后显式启用：
+
+```bash
+PAICLI_RUN_VLLM_LIVE_TEST=1 \
+python3 -m unittest discover -s tests -p 'test_vllm_live.py' -v
+```
+
+在 IDE 中运行
+`VllmLiveDebugTest.test_real_agent_reads_file_and_feeds_result_back`，
+环境变量设为 `PAICLI_RUN_VLLM_LIVE_TEST=1`。从 `answer = agent.run(...)`
+单步进入，可依次看到两次模型请求、`read_file` 执行、
+`tool_call_id` 回灌和最终结束分支。
+
+### 2026-08-01 实测记录
+
+- `/health` 和 `/v1/models` 返回成功。
+- PaiCLI `chat` 检查返回 `PAICLI_OK`。
+- PaiCLI `tools` 检查生成了结构化 `probe_echo` 调用。
+- 完整 Agent 流程真实执行了 `read_file(README.md)`，回灌后回答第一行。
+- 图片输入成功识别了测试图表，证明多模态请求链路可用。
+- 63 个日常自动化测试全部通过；额外的真实 A40 测试需显式开启。
