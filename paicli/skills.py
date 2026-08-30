@@ -25,7 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .tools import ToolRegistry, ToolSpec
+from .tools import (
+    ConcurrencyPolicy,
+    ToolRegistry,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,10 @@ def register_skill_tool(
             ),
             # 执行时才从注册表取出完整指令，这就是懒加载的落点。
             lambda arguments: context.load(skills.get(str(arguments["name"]))),
+            risk=ToolRisk.SAFE,
+            # 同一上下文缓冲区是可变状态，多个并发加载必须保持顺序。
+            side_effect=ToolSideEffect.UNKNOWN,
+            concurrency=ConcurrencyPolicy.SERIAL,
         )
     )
     return context

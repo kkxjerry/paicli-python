@@ -1,6 +1,6 @@
 # Java → Python behavior parity ledger
 
-This file is the Phase 0 source of truth for porting PaiCLI behavior.  The goal
+This file is the Phase 0–5 source of truth for porting PaiCLI behavior. The goal
 is **behavioral parity at public boundaries**, not line-by-line Java
 translation.  Intentional Python improvements are recorded explicitly so a
 future change cannot silently reintroduce a Java limitation.
@@ -29,19 +29,36 @@ future change cannot silently reintroduce a Java limitation.
 | Tool-call signature | raw argument JSON string | absent | canonical JSON plus result hash | Deliberate improvement |
 | Shell default | callable; HITL may be disabled | disabled unless explicitly enabled | keep disabled by default | Intentional safety divergence |
 
-## Explicitly out of scope for Phase 0–2
+## Phase 3–5 parity matrix
 
-The following remain separate phases and must not be advertised as completed by
-this change:
+| Capability | Java reference behavior | Python before Phase 3–5 | Python Phase 3–5 result | Decision |
+|---|---|---|---|---|
+| Tool result | mostly user-facing strings | strings only | typed `ToolResult` plus compatible string facade | Improve architecture |
+| Runtime argument validation | schemas sent to model, limited handler checks | JSON object check only | dependency-free JSON Schema subset enforced before policy and handler | Deliberate improvement |
+| Tool scheduling | same-response calls may run concurrently | every call ran concurrently | read/write resource claims create conflict-free waves | Deliberate improvement |
+| External MCP side effects | MCP tools require approval in Java CLI | treated like ordinary tools | unknown risk, serial scheduling, HITL classification | Match safety intent |
+| Default context wiring | memory/compaction active in main Agent | modules existed but CLI omitted them | default bootstrap wires context, LLM compaction, LSP and `save_memory` | Match Java |
+| History compaction | summarize old history, retain 3 recent user rounds | deterministic per-message truncation | LLM summary with protocol-safe split, cache and deterministic fallback | Match and improve |
+| Long-window memory | still managed | LONG profile bypassed memory | every profile uses the same memory pipeline | Deliberate fix |
+| Planner source | LLM for complex goals, rule fast-path for obvious simple goals | `StaticPlanner` only | `LlmPlanner` plus retained `StaticPlanner` | Match Java |
+| Plan repair | malformed model output may be retried | absent | one bounded repair by default with exact validation feedback | Improve reliability |
+| DAG representation | Java has separate Plan and Team graph models | one small static graph | one `ExecutionPlan`, `PlanValidator`, and `DagScheduler` for future modes | Improve architecture |
+| DAG validation | `/plan` detects cycles; `/team` is weaker | unique/unknown/self/cycle checks | same validation contract for every future caller | Deliberate improvement |
+| Failed independent branch | mode-dependent | executor returned immediately on first failure | blocked descendants skip; independent ready work continues | Deliberate improvement |
+| Replan state transfer | completed work mainly enters prompt text | replacement lost result map | matching completed tasks may be inherited into replacement | Deliberate improvement |
 
-- LLM Planner and unified DAG validation
+## Explicitly out of scope after Phase 5
+
+The following remain separate phases and must not be advertised as completed:
+
 - `/plan` and `/team` CLI modes
+- Plan tasks executed by the shared LLM `AgentLoopEngine`
 - real Worker/Reviewer sub-agents
-- reviewer retry and failure propagation
-- runtime JSON Schema validation
-- conflict-aware tool or worker scheduling
-- automatic memory/context wiring
-- snapshots, checkpoints, and evaluation harness
+- reviewer verdict, retry, and failure propagation
+- worker-level parallel execution and workspace isolation
+- default CLI HITL assembly
+- automatic turn snapshots, checkpoints, and evaluation harness
+- production-grade memory conflict resolution and stale-memory invalidation
 
 ## Compatibility rules
 
@@ -53,12 +70,24 @@ this change:
 5. Budgets are recreated for every run; token and stagnation state never leak
    from one user turn to the next.
 
-## Phase 0–2 known boundaries
+## Phase 0–5 known boundaries
 
 - Token enforcement uses provider-reported `usage`. If a compatible endpoint
   omits usage, the loop still has stagnation and iteration protection but
   cannot infer exact billed tokens in this phase.
 - `NonEmptyCompletionPolicy` only prevents empty success. Repository tests,
   diff checks, and reviewer verdicts remain later completion policies.
-- `AgentOutcome.changed_files` currently records successful built-in
-  `write_file` calls. Shell or MCP side effects are intentionally not guessed.
+- `AgentOutcome.changed_files` records structured file-resource claims from
+  successful tools. Shell and undeclared MCP side effects are intentionally not guessed.
+- The built-in validator enforces the common JSON Schema subset documented in
+  `paicli/tool_validation.py`; remote `$ref` resolution and every draft keyword
+  are not implemented.
+- A Python thread cannot be safely killed. The scheduler reports a timeout for
+  overdue thread-based tools, while process tools must also enforce their own
+  subprocess/network timeout to stop the underlying operation.
+- History-summary model calls are cached and have a deterministic fallback, but
+  their token usage is not yet folded into the parent `AgentOutcome`.
+- Long-term memory remains append-only keyword retrieval; conflict resolution,
+  update/delete, provenance, and staleness are later work.
+- `LlmPlanner` is a library capability in Phase 5. The default CLI remains ReAct
+  until `/plan` is wired in the next phase.

@@ -19,9 +19,10 @@ import time
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from .tools import ToolRegistry
+from .tool_contracts import ToolErrorType, ToolResult, ToolRisk
+from .tools import ToolRegistry, ToolSpec
 
 
 class RiskLevel(str, Enum):
@@ -81,9 +82,14 @@ class CommandGuard:
 
 
 class ApprovalPolicy:
-    """根据工具类型和参数生成风险评估。"""
+    """根据工具类型、参数和 ToolSpec 元数据生成风险评估。"""
 
-    def assess(self, tool_name: str, arguments: dict[str, object]) -> ApprovalRequest:
+    def assess(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        spec: ToolSpec | None = None,
+    ) -> ApprovalRequest:
         if tool_name == "execute_command":
             command = str(arguments.get("command", ""))
             blocked = CommandGuard.reject_reason(command)
@@ -103,6 +109,27 @@ class ApprovalPolicy:
                 arguments,
                 RiskLevel.MEDIUM,
                 "tool writes to the project",
+            )
+        if tool_name.startswith("mcp__"):
+            return ApprovalRequest(
+                tool_name,
+                arguments,
+                RiskLevel.MEDIUM,
+                "external MCP tools have undeclared side effects",
+            )
+        if spec is not None and spec.risk in {ToolRisk.MEDIUM, ToolRisk.UNKNOWN}:
+            return ApprovalRequest(
+                tool_name,
+                arguments,
+                RiskLevel.MEDIUM,
+                "tool metadata declares medium or unknown risk",
+            )
+        if spec is not None and spec.risk is ToolRisk.HIGH:
+            return ApprovalRequest(
+                tool_name,
+                arguments,
+                RiskLevel.HIGH,
+                "tool metadata declares high risk",
             )
         return ApprovalRequest(tool_name, arguments, RiskLevel.SAFE, "read-only tool")
 
@@ -159,38 +186,97 @@ class HitlToolRegistry:
     def names(self) -> list[str]:
         return self.registry.names()
 
-    def execute(self, name: str, arguments_json: str) -> str:
-        # 先在审批层解析参数，因为策略判断和用户审批都需要查看它。
-        try:
-            arguments = json.loads(arguments_json or "{}")
-            if not isinstance(arguments, dict):
-                raise ValueError("arguments must be an object")
-        except (json.JSONDecodeError, ValueError) as exc:
-            return f"Tool error: {exc}"
+    def spec(self, name: str) -> ToolSpec | None:
+        return self.registry.spec(name)
 
-        request = self.policy.assess(name, arguments)
-        # 本期用 HIGH + reason 前缀区分“必须拒绝”与“可人工审批”的 Shell。
+    def validate_arguments(self, name: str, arguments_json: str) -> dict[str, Any]:
+        return self.registry.validate_arguments(name, arguments_json)
+
+    def execute(self, name: str, arguments_json: str) -> str:
+        return self.execute_result(name, arguments_json).content
+
+    def execute_result(self, name: str, arguments_json: str) -> ToolResult:
+        return self._execute_result(name, arguments_json, timeout_seconds=None)
+
+    def _execute_result(
+        self,
+        name: str,
+        arguments_json: str,
+        *,
+        timeout_seconds: float | None,
+    ) -> ToolResult:
+        # 运行时 Schema 校验必须先于策略和人工审批，避免让用户审批一个
+        # 缺字段、类型错误或带多余字段的请求。
+        try:
+            arguments = self.registry.validate_arguments(name, arguments_json)
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            return self.registry.execute_many_results(
+                [(name, arguments_json)],
+                timeout_seconds=timeout_seconds,
+            )[0]
+
+        request = self.policy.assess(name, arguments, self.registry.spec(name))
         blocked = (
             request.risk is RiskLevel.HIGH
             and request.reason.startswith("command rejected")
         )
         if blocked:
-            # 硬策略优先级高于人工审批，因此不会调用 handler。
             self._audit(request, "deny", "policy")
-            return f"Tool denied: {request.reason}"
+            return ToolResult.failure(
+                name,
+                f"Tool denied: {request.reason}",
+                ToolErrorType.POLICY_DENIED,
+            )
 
         if self.enabled and request.risk is not RiskLevel.SAFE:
             result = self.handler(request)
             if result.decision is ApprovalDecision.DENY:
                 self._audit(request, "deny", "hitl")
-                return "Tool denied by user"
-            # 审批器可以在允许的同时缩小参数范围；未提供则使用原参数。
+                return ToolResult.failure(
+                    name,
+                    "Tool denied by user",
+                    ToolErrorType.APPROVAL_DENIED,
+                )
             arguments = result.arguments or arguments
             self._audit(request, "allow", "hitl")
         else:
             self._audit(request, "allow", "none")
-        # 只有通过策略和 HITL 后，请求才会到达真正的 ToolRegistry。
-        return self.registry.execute(name, json.dumps(arguments, ensure_ascii=False))
+
+        # 审批器可能修改参数；重新序列化并再次经过底层 Schema 校验。
+        return self.registry.execute_many_results(
+            [(name, json.dumps(arguments, ensure_ascii=False))],
+            timeout_seconds=timeout_seconds,
+        )[0]
+
+    def execute_many(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[str]:
+        return [
+            result.content
+            for result in self.execute_many_results(
+                calls,
+                timeout_seconds=timeout_seconds,
+            )
+        ]
+
+    def execute_many_results(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[ToolResult]:
+        # 审批 UI 是交互式状态机，多个弹窗不能在线程中并发竞争终端。
+        return [
+            self._execute_result(
+                name,
+                arguments,
+                timeout_seconds=timeout_seconds,
+            )
+            for name, arguments in calls
+        ]
 
     def _audit(self, request: ApprovalRequest, outcome: str, approver: str) -> None:
         if self.audit_log:

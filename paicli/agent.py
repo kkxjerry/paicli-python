@@ -17,7 +17,7 @@ from .agents.models import (
     NonEmptyCompletionPolicy,
     RunStatus,
 )
-from .context import ContextController
+from .context import ContextController, ContextSettings
 from .images import ImageAttachment, multimodal_user_message
 from .llm_client import LlmClient
 from .lsp import LspManager
@@ -125,6 +125,31 @@ class Agent:
 
         self.history = [self.history[0]]
         self.last_outcome = None
+
+    def set_client(self, client: LlmClient) -> None:
+        """Switch models while keeping context policy and summarizer coherent."""
+
+        self.client = client
+        if self.memory is not None:
+            self.memory.set_summary_client(client)
+        if self.context is not None:
+            raw_window = getattr(client, "context_window", 128_000)
+            try:
+                context_window = max(8_000, int(raw_window))
+            except (TypeError, ValueError):
+                context_window = 128_000
+            settings = ContextSettings.for_model(
+                context_window,
+                supports_prompt_caching=bool(
+                    getattr(client, "supports_prompt_caching", False)
+                ),
+            )
+            self.context.update_settings(settings)
+            if self.memory is not None:
+                self.memory.set_max_tokens(settings.compression_trigger_tokens)
+                self.memory.set_long_term_context_tokens(
+                    settings.memory_context_tokens
+                )
 
     def _new_engine(self) -> AgentLoopEngine:
         return AgentLoopEngine(

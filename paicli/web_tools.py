@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Callable, Protocol
 
-from .tools import ToolRegistry, ToolSpec
+from .tools import (
+    ConcurrencyPolicy,
+    ToolRegistry,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 class NetworkPolicy:
@@ -203,6 +209,9 @@ def register_web_tools(
                 required=["url"],
             ),
             lambda arguments: fetcher.fetch(str(arguments["url"])).text,
+            risk=ToolRisk.SAFE,
+            side_effect=ToolSideEffect.READ_ONLY,
+            concurrency=ConcurrencyPolicy.PARALLEL,
         )
     )
     if search_provider:
@@ -228,5 +237,8 @@ def register_web_tools(
                     ],
                     ensure_ascii=False,
                 ),
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.PARALLEL,
             )
         )

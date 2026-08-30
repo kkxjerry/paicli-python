@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .agent import Agent, AgentLoopError
 from .agents.budget import AgentBudget
+from .bootstrap import build_react_runtime
 from .images import ImageAttachment, ImageProcessor
 from .interaction import CliCommand, CliCommandParser, PaiCliHistory, normalize_input
 from .llm_client import LlmClientFactory, LlmError, OpenAICompatibleClient
@@ -108,6 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow the model to execute shell commands",
     )
     parser.add_argument(
+        "--memory-file",
+        type=Path,
+        help="Long-term memory JSONL path (default: ~/.paicli/memory.jsonl)",
+    )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable context compaction, retrieval, and the save_memory tool",
+    )
+    parser.add_argument(
         "--check-model",
         choices=("chat", "tools"),
         help="Call the configured real model once and exit",
@@ -137,17 +148,16 @@ def main() -> int:
     if args.check_model:
         return run_model_probe(client, args.check_model)
 
-    # project_root 决定文件、图片等工具能访问的最大目录边界。
-    # Shell 必须通过命令行或环境变量显式开启，默认只暴露低风险工具。
-    tools = ToolRegistry(
+    renderer = create_renderer(args.renderer)
+    # Phase 4: the default CLI now uses the same testable assembly path for
+    # tools, context policy, LLM-backed history compaction, long-term memory,
+    # save_memory, and post-write diagnostics.
+    runtime = build_react_runtime(
+        client,
         args.project_root,
         allow_shell=args.allow_shell or env_flag("PAICLI_ALLOW_SHELL"),
-    )
-    renderer = create_renderer(args.renderer)
-    # 依赖在 CLI 组装后注入 Agent，所以单元测试可以使用 FakeClient/FakeTool。
-    agent = Agent(
-        client,
-        tools,
+        enable_memory=not args.no_memory,
+        memory_path=args.memory_file,
         max_steps=args.max_steps,
         token_budget=args.token_budget,
         stagnation_window=args.stagnation_window,
@@ -156,6 +166,8 @@ def main() -> int:
             renderer.event(kind, text) if kind != "answer" else None
         ),
     )
+    tools = runtime.tools
+    agent = runtime.agent
     image_processor = ImageProcessor(args.project_root)
 
     if args.prompt:
@@ -170,7 +182,12 @@ def main() -> int:
     # 没有 -p 时才进入交互式 REPL，并加载本地输入历史。
     provider = getattr(client, "provider", "custom")
     renderer.status(
-        StatusInfo(provider, client.model, "react", "phase 22")
+        StatusInfo(
+            provider,
+            client.model,
+            "react",
+            f"window={runtime.settings.window} memory={'off' if args.no_memory else 'on'}",
+        )
     )
     print("\nCommands: /help, /tools, /model, /context, /history, /clear, /exit")
     history = PaiCliHistory(Path.home() / ".paicli" / "history.json")
@@ -227,7 +244,9 @@ def handle_command(
             f"provider={getattr(client, 'provider', 'custom')} "
             f"messages={len(agent.history)} max_steps={agent.max_steps} "
             f"stagnation_window={agent.stagnation_window} "
-            f"token_budget={agent.token_budget or 'unlimited'}"
+            f"token_budget={agent.token_budget or 'unlimited'} "
+            f"context_window={getattr(agent.context.settings, 'window', 'unknown') if agent.context else 'none'} "
+            f"memory={agent.memory.status() if agent.memory else 'disabled'}"
         )
     elif command.name == "model":
         # 切模型只替换 client，保留已有对话历史和工具注册表。
@@ -235,7 +254,7 @@ def handle_command(
             print("Usage: /model <glm|deepseek|stepfun|kimi|vllm>")
         else:
             try:
-                agent.client = LlmClientFactory.create(command.arguments[0])
+                agent.set_client(LlmClientFactory.create(command.arguments[0]))
                 print(f"Switched to {agent.client.model}.")
             except ValueError as exc:
                 print(f"Configuration error: {exc}")

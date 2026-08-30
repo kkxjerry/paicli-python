@@ -25,7 +25,15 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .tools import ToolRegistry, ToolSpec
+from .tools import (
+    ConcurrencyPolicy,
+    ToolErrorType,
+    ToolRegistry,
+    ToolResult,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 class McpError(RuntimeError):
@@ -251,10 +259,22 @@ class McpClient:
 
             def handler(
                 arguments: dict[str, Any],
-                # 默认参数在定义时冻结当前 descriptor.name，避免 Python 闭包晚绑定问题。
+                # 默认参数在定义时冻结当前 descriptor/name，避免 Python 闭包晚绑定问题。
                 remote_name: str = descriptor.name,
-            ) -> str:
-                return self.call_tool(remote_name, arguments)
+                tool_name: str = local_name,
+            ) -> str | ToolResult:
+                result = self.call_tool(remote_name, arguments)
+                if result.startswith("MCP tool error:"):
+                    return ToolResult.failure(
+                        tool_name,
+                        result,
+                        ToolErrorType.EXECUTION_ERROR,
+                        # MCP does not declare idempotency or side effects in
+                        # the base tool descriptor; an error may follow a
+                        # partial remote action, so automatic retry is unsafe.
+                        retryable=False,
+                    )
+                return result
 
             registry.register(
                 ToolSpec(
@@ -262,6 +282,13 @@ class McpClient:
                     f"[MCP {self.name}] {descriptor.description}",
                     descriptor.input_schema,
                     handler,
+                    # An external MCP schema does not declare side effects in
+                    # the base protocol. Unknown tools therefore fail closed:
+                    # policy may request approval and the scheduler serializes
+                    # them until richer metadata is available.
+                    risk=ToolRisk.UNKNOWN,
+                    side_effect=ToolSideEffect.UNKNOWN,
+                    concurrency=ConcurrencyPolicy.SERIAL,
                 )
             )
             registered.append(local_name)

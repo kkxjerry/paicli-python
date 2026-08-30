@@ -1,8 +1,15 @@
 # 22 期学习索引
 
-> Java → Python 的行为同步是独立迁移线，不改变下面原有的 22 期编号。Phase 0-2 的基线、差异和验收项见 `docs/java-parity.md`。
+> Java → Python 的行为同步是独立迁移线，不改变下面原有的 22 期编号。Phase 0-5 的基线、差异和验收项见 `docs/java-parity.md`；Phase 3-5 的实现留痕见 `docs/phase-03-05-implementation.md`。
 
 每一期都先读测试，再读实现。测试会直接告诉你模块的输入、输出和边界。
+
+当前 `develop` 上的行为同步层额外提供：
+
+- `paicli/tool_contracts.py`、`tool_validation.py`、`tools.py`：结构化工具结果、运行时 Schema 校验和冲突感知调度。
+- `paicli/bootstrap.py`、`memory.py`、`context.py`：默认 CLI 的 Memory/Context 组装与协议安全压缩。
+- `paicli/planning.py`：`LlmPlanner + PlanValidator + DagScheduler` 统一计划合同。
+
 
 | 期数 | 核心能力 | 先看测试 | 再看实现 |
 |---:|---|---|---|

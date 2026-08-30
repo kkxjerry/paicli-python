@@ -58,7 +58,7 @@ git diff phase-06-cn..phase-07-cn -- paicli/agent.py paicli/tools.py
 
 其他模块都在这条主链路周围解决一个具体问题：
 
-Phase 0-2 的 Java 行为同步已经把这条循环抽到 `paicli/agents/loop.py`：
+Phase 0-5 的 Java 行为同步已经把执行内核和三类基础设施收敛为可复用组件：
 
 - 默认硬轮数由 20 调整为 50。
 - 连续 3 轮相同的工具调用和观察结果会判定为停滞。
@@ -66,8 +66,13 @@ Phase 0-2 的 Java 行为同步已经把这条循环抽到 `paicli/agents/loop.p
 - OpenAI-compatible `usage` 会累计到结构化 `AgentOutcome`。
 - `Agent.run()` 继续返回字符串；编排代码可用 `Agent.run_outcome()` 读取结束原因、Token 和改动文件。
 - 模型返回空内容且没有工具调用时，不再直接视为成功完成。
+- 工具参数在执行端做 JSON Schema 校验，结果用 `ToolResult` 区分参数错误、策略拒绝、超时和执行错误。
+- 同轮工具按资源读写冲突分批；同一路径读写或写写不会再无条件并发。
+- 默认 CLI 已接入上下文、LLM 历史摘要、长期记忆、`save_memory` 和写后 LSP 诊断。
+- `LlmPlanner` 可为复杂任务生成计划，`PlanValidator` 与 `DagScheduler` 负责统一 DAG 校验、拓扑序和批次。
 
-完整对齐边界见 [Java → Python behavior parity ledger](docs/java-parity.md)。
+完整对齐边界见 [Java → Python behavior parity ledger](docs/java-parity.md)，实现留痕见
+[Phase 3-5 implementation notes](docs/phase-03-05-implementation.md)。
 
 - `planning.py`、`multi_agent.py`：复杂任务如何拆分和协作。
 - `memory.py`、`rag.py`、`context.py`：模型应该看到哪些上下文。
@@ -135,6 +140,23 @@ python3 -m paicli --allow-shell
 
 ```bash
 python3 -m paicli --max-steps 50 --stagnation-window 3 --token-budget 50000
+```
+
+默认长期记忆写入 `~/.paicli/memory.jsonl`，也可以指定路径或关闭：
+
+```bash
+python3 -m paicli --memory-file .paicli/memory.jsonl
+python3 -m paicli --no-memory
+```
+
+Phase 5 已提供可直接调用的 LLM Planner，但 `/plan` 与 `/team` 尚未接入 CLI：
+
+```python
+from paicli import LlmPlanner
+
+planner = LlmPlanner(client)
+plan = planner.create_plan("Inspect the implementation, edit it, and run tests")
+print(plan.render())
 ```
 
 ## 安全边界

@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from ..context import TokenUsage
 from ..llm_client import ChatResponse
+from ..tool_contracts import ToolResult
 
 
 class RunStatus(str, Enum):
@@ -54,6 +55,7 @@ class AgentOutcome:
     iterations: int = 0
     error: str = ""
     changed_files: tuple[str, ...] = ()
+    tool_results: tuple[ToolResult, ...] = ()
 
     @property
     def succeeded(self) -> bool:

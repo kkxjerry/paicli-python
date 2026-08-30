@@ -17,6 +17,7 @@ from ..llm_client import LlmClient, ToolCall
 from ..lsp import LspDiagnosticFormatter, LspManager
 from ..memory import MemoryManager
 from ..runtime import CancelledError, CancellationToken
+from ..tool_contracts import ToolResult
 from .budget import AgentBudget, BudgetExitReason
 from .models import (
     AgentOutcome,
@@ -91,12 +92,18 @@ class AgentLoopEngine:
             hard_max_iterations=self.max_iterations,
         )
         changed_files: list[str] = []
+        tool_results: list[ToolResult] = []
         self.history.append(dict(user_message))
 
         while True:
             # An explicit user cancellation takes precedence over an automatic
             # budget diagnosis if both become visible at the same checkpoint.
-            cancelled = self._cancelled_outcome(run_id, budget, changed_files)
+            cancelled = self._cancelled_outcome(
+                run_id,
+                budget,
+                changed_files,
+                tool_results,
+            )
             if cancelled is not None:
                 return cancelled
 
@@ -107,6 +114,7 @@ class AgentLoopEngine:
                     budget,
                     exit_reason,
                     changed_files,
+                    tool_results,
                 )
                 return outcome
 
@@ -118,7 +126,12 @@ class AgentLoopEngine:
             # Cancellation may arrive while the provider request is in flight.
             # Check before accepting an answer or executing any requested side
             # effect; do not leave an assistant tool-call message dangling.
-            cancelled = self._cancelled_outcome(run_id, budget, changed_files)
+            cancelled = self._cancelled_outcome(
+                run_id,
+                budget,
+                changed_files,
+                tool_results,
+            )
             if cancelled is not None:
                 return cancelled
 
@@ -144,6 +157,7 @@ class AgentLoopEngine:
                         usage=budget.usage,
                         iterations=budget.iteration,
                         changed_files=tuple(changed_files),
+                        tool_results=tuple(tool_results),
                     )
 
                 feedback = decision.feedback.strip() or (
@@ -172,27 +186,36 @@ class AgentLoopEngine:
                     f"({len(results)}) than calls ({len(response.tool_calls)})"
                 )
 
+            tool_results.extend(results)
             for call, result in zip(response.tool_calls, results, strict=True):
-                self.on_event("result", result)
+                self.on_event("result", result.content)
                 self.history.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": call.name,
-                        "content": result,
+                        "content": result.content,
                     }
                 )
-                changed_path = _changed_path(call, result)
-                if changed_path:
+                for changed_path in result.changed_files:
                     if changed_path not in changed_files:
                         changed_files.append(changed_path)
+                if result.ok and result.changed_files:
                     self._report_diagnostics(call.name, call.arguments)
 
-            budget.record_tool_round(response.tool_calls, results)
+            budget.record_tool_round(
+                response.tool_calls,
+                [result.content for result in results],
+            )
             # If cancellation arrived during the batch, preserve the complete
             # assistant/tool protocol in history, then stop before a new model
             # request is issued.
-            cancelled = self._cancelled_outcome(run_id, budget, changed_files)
+            cancelled = self._cancelled_outcome(
+                run_id,
+                budget,
+                changed_files,
+                tool_results,
+            )
             if cancelled is not None:
                 return cancelled
 
@@ -201,6 +224,7 @@ class AgentLoopEngine:
         run_id: str,
         budget: AgentBudget,
         changed_files: list[str],
+        tool_results: list[ToolResult],
     ) -> AgentOutcome | None:
         try:
             self.cancellation.check()
@@ -214,6 +238,7 @@ class AgentLoopEngine:
                 iterations=budget.iteration,
                 error=str(exc),
                 changed_files=tuple(changed_files),
+                tool_results=tuple(tool_results),
             )
         return None
 
@@ -224,12 +249,35 @@ class AgentLoopEngine:
             return self.memory.prepare(self.history)
         return self.history
 
-    def _execute_tools(self, calls: tuple[ToolCall, ...]) -> list[str]:
+    def _execute_tools(self, calls: tuple[ToolCall, ...]) -> list[ToolResult]:
         serialized = [(call.name, call.arguments) for call in calls]
+
+        execute_many_results = getattr(self.tools, "execute_many_results", None)
+        if callable(execute_many_results):
+            raw_results = list(execute_many_results(serialized))
+            return _coerce_batch_results(calls, raw_results)
+
         execute_many = getattr(self.tools, "execute_many", None)
         if callable(execute_many):
-            return list(execute_many(serialized))
-        return [self.tools.execute(name, arguments) for name, arguments in serialized]
+            raw_results = list(execute_many(serialized))
+            return _coerce_batch_results(calls, raw_results)
+
+        execute_result = getattr(self.tools, "execute_result", None)
+        if callable(execute_result):
+            return [
+                _coerce_tool_result(
+                    call.name,
+                    execute_result(call.name, call.arguments),
+                ).with_call_id(call.id)
+                for call in calls
+            ]
+        return [
+            ToolResult.success(
+                call.name,
+                self.tools.execute(call.name, call.arguments),
+            ).with_call_id(call.id)
+            for call in calls
+        ]
 
     def _report_diagnostics(self, tool_name: str, arguments_json: str) -> None:
         if self.lsp is None or tool_name != "write_file":
@@ -248,6 +296,7 @@ class AgentLoopEngine:
         budget: AgentBudget,
         reason: BudgetExitReason,
         changed_files: list[str],
+        tool_results: list[ToolResult],
     ) -> AgentOutcome:
         finish_reason = {
             BudgetExitReason.HARD_ITERATION_LIMIT: FinishReason.MAX_ITERATIONS,
@@ -263,17 +312,28 @@ class AgentLoopEngine:
             iterations=budget.iteration,
             error=budget.describe_exit(reason),
             changed_files=tuple(changed_files),
+            tool_results=tuple(tool_results),
         )
 
 
-def _changed_path(call: ToolCall, result: str) -> str | None:
-    """Collect only writes that the built-in registry reports as successful."""
+def _coerce_batch_results(
+    calls: tuple[ToolCall, ...],
+    values: list[object],
+) -> list[ToolResult]:
+    if len(values) != len(calls):
+        raise RuntimeError(
+            "tool executor returned a different number of results "
+            f"({len(values)}) than calls ({len(calls)})"
+        )
+    return [
+        _coerce_tool_result(call.name, value).with_call_id(call.id)
+        for call, value in zip(calls, values, strict=True)
+    ]
 
-    if call.name != "write_file" or not result.startswith("Wrote "):
-        return None
-    try:
-        value = json.loads(call.arguments)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    path = value.get("path") if isinstance(value, dict) else None
-    return str(path) if path else None
+
+def _coerce_tool_result(tool_name: str, value: object) -> ToolResult:
+    """Adapt legacy string runtimes to the structured gateway contract."""
+
+    if isinstance(value, ToolResult):
+        return value
+    return ToolResult.success(tool_name, str(value))

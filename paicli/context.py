@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable
 
-from .memory import MemoryManager, estimate_tokens
+from .memory import MemoryManager, estimate_message_tokens
 
 
 class ContextProfile(str, Enum):
@@ -39,6 +39,23 @@ class ContextSettings:
     token_budget: int
     rag_top_k: int
     prompt_caching: bool
+
+    @property
+    def memory_context_tokens(self) -> int:
+        """Bound long-term-memory injection independently of chat history."""
+
+        return max(500, min(5_000, self.window // 200))
+
+    @property
+    def compression_trigger_tokens(self) -> int:
+        """Start compaction at 90% of the usable input budget.
+
+        ``token_budget`` already reserves 20% of the model window for output
+        and estimation error. Measuring the trigger against that usable budget
+        guarantees compaction runs before the final hard input gate.
+        """
+
+        return max(1, int(self.token_budget * 0.9))
 
     @classmethod
     def for_model(
@@ -103,10 +120,7 @@ class AgentBudget:
 
     def estimate_messages(self, messages: list[dict[str, Any]]) -> int:
         # 每条额外加 4，粗略补偿 role/分隔符等聊天模板开销。
-        return sum(
-            estimate_tokens(str(message.get("content", ""))) + 4
-            for message in messages
-        )
+        return sum(estimate_message_tokens(message) for message in messages)
 
     def ensure_fits(self, messages: list[dict[str, Any]]) -> int:
         # 超预算直接拒绝，避免请求发出后才收到 provider 的上下文超限错误。
@@ -140,16 +154,24 @@ class ContextController:
         self.resources = list(resources)
         self.budget = AgentBudget(settings.token_budget)
 
+    def update_settings(self, settings: ContextSettings) -> None:
+        """Apply a newly selected model's context capabilities."""
+
+        self.settings = settings
+        self.budget = AgentBudget(settings.token_budget)
+
     def prepare(
         self,
         messages: list[dict[str, Any]],
         memory: MemoryManager | None = None,
     ) -> list[dict[str, Any]]:
-        # SHORT/BALANCED 窗口优先用 MemoryManager 压缩；LONG 保留完整历史。
-        if memory and self.settings.profile is not ContextProfile.LONG:
-            prepared = memory.prepare(messages)
-        else:
-            prepared = [dict(message) for message in messages]
+        # 所有窗口都使用同一 Memory/History 管线。长窗口只是更晚触发，
+        # 不能因为模型窗口大就永久跳过压缩和长期记忆注入。
+        prepared = (
+            memory.prepare(messages)
+            if memory is not None
+            else [dict(message) for message in messages]
+        )
 
         if self.settings.profile is ContextProfile.LONG and self.resources:
             # 长窗口先注入“可用资源目录”，模型后续可决定读哪个 Resource。

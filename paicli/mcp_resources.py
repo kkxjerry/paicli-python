@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .mcp import McpClient
-from .tools import ToolRegistry, ToolSpec
+from .tools import (
+    ConcurrencyPolicy,
+    ToolRegistry,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,9 @@ class McpResourceClient:
                     f"{resource.uri}\t{resource.description}"
                     for resource in self.list_resources()
                 ),
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.PARALLEL,
             )
         )
         registry.register(
@@ -128,6 +137,9 @@ class McpResourceClient:
                     required=["uri"],
                 ),
                 lambda arguments: self.read_resource(str(arguments["uri"])).text,
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.PARALLEL,
             )
         )
         return [

@@ -13,8 +13,33 @@ from .agents import (
     RunStatus,
     ToolRuntime,
 )
+from .bootstrap import ReactRuntime, build_react_runtime
 from .llm_client import ChatResponse, OpenAICompatibleClient, ToolCall
-from .tools import ToolRegistry
+from .memory import ConversationHistoryCompactor, LongTermMemory, MemoryManager
+from .planning import (
+    DagScheduler,
+    ExecutionPlan,
+    LlmPlanner,
+    PlanExecuteAgent,
+    PlanGenerationError,
+    PlanValidationError,
+    PlanValidator,
+    StaticPlanner,
+    Task,
+    TaskStatus,
+    TaskType,
+)
+from .tools import (
+    ConcurrencyPolicy,
+    ResourceAccess,
+    ResourceMode,
+    ToolErrorType,
+    ToolRegistry,
+    ToolResult,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 __version__ = "0.22.0"
 
@@ -26,14 +51,38 @@ __all__ = [
     "AgentOutcome",
     "BudgetExitReason",
     "ChatResponse",
+    "ConcurrencyPolicy",
+    "ConversationHistoryCompactor",
+    "DagScheduler",
     "CompletionDecision",
     "CompletionPolicy",
+    "ExecutionPlan",
     "FinishReason",
+    "LlmPlanner",
+    "LongTermMemory",
+    "MemoryManager",
     "NonEmptyCompletionPolicy",
     "OpenAICompatibleClient",
+    "PlanExecuteAgent",
+    "PlanGenerationError",
+    "PlanValidationError",
+    "PlanValidator",
+    "ReactRuntime",
+    "ResourceAccess",
+    "ResourceMode",
     "RunStatus",
+    "StaticPlanner",
+    "Task",
+    "TaskStatus",
+    "TaskType",
     "ToolCall",
+    "ToolErrorType",
+    "ToolResult",
+    "ToolRisk",
     "ToolRuntime",
     "ToolRegistry",
+    "ToolSideEffect",
+    "ToolSpec",
+    "build_react_runtime",
     "__version__",
 ]

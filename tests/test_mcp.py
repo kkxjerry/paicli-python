@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 
 from paicli.mcp import McpClient, McpSchemaSanitizer
-from paicli.tools import ToolRegistry
+from paicli.tools import ConcurrencyPolicy, ToolRegistry, ToolRisk
 
 
 class InMemoryTransport:
@@ -76,6 +76,13 @@ class McpTest(unittest.TestCase):
         self.assertEqual(["mcp__demo__echo"], registered)
         self.assertEqual("hello MCP", result)
         self.assertEqual("demo", client.server_info["name"])
+        spec = registry.spec("mcp__demo__echo")
+        self.assertIsNotNone(spec)
+        self.assertEqual(ToolRisk.UNKNOWN, spec.risk)  # type: ignore[union-attr]
+        self.assertEqual(
+            ConcurrencyPolicy.SERIAL,
+            spec.concurrency,  # type: ignore[union-attr]
+        )
 
     def test_sanitizer_wraps_non_object_schema(self) -> None:
         """验证根节点为 string 的远程 schema 会被包装成 object，并删除 title。"""

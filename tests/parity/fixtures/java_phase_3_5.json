@@ -1,0 +1,16 @@
+{
+  "tool_gateway": {
+    "runtime_schema_validation": true,
+    "external_mcp_concurrency": "serial"
+  },
+  "context": {
+    "memory_enabled_by_default": true,
+    "retain_recent_user_rounds": 3,
+    "compression_trigger_fraction_of_input_budget": 0.9
+  },
+  "planning": {
+    "max_repair_attempts": 1,
+    "require_non_empty_llm_plan": true,
+    "shared_dag_contract": true
+  }
+}

@@ -4,7 +4,13 @@ import tempfile
 import threading
 import unittest
 
-from paicli.tools import ToolRegistry, ToolSpec
+from paicli.tools import (
+    ConcurrencyPolicy,
+    ToolRegistry,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 class ParallelToolsTest(unittest.TestCase):
@@ -31,6 +37,9 @@ class ParallelToolsTest(unittest.TestCase):
                         required=["value"],
                     ),
                     synchronized,
+                    risk=ToolRisk.SAFE,
+                    side_effect=ToolSideEffect.READ_ONLY,
+                    concurrency=ConcurrencyPolicy.PARALLEL,
                 )
             )
 

@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .tools import ToolRegistry, ToolSpec
+from .tools import (
+    ConcurrencyPolicy,
+    ToolRegistry,
+    ToolRisk,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 
 def tokenize(text: str) -> Counter[str]:
@@ -201,5 +207,8 @@ class CodeIndex:
                     required=["query"],
                 ),
                 handler=search_code,
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.PARALLEL,
             )
         )

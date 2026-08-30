@@ -12,7 +12,7 @@ from paicli.agents.models import CompletionDecision, FinishReason, RunStatus
 from paicli.llm_client import ChatResponse, ToolCall
 from paicli.lsp import LspManager
 from paicli.runtime import CancellationToken
-from paicli.tools import ToolRegistry
+from paicli.tools import ToolErrorType, ToolRegistry
 
 
 class FakeClient:
@@ -89,8 +89,44 @@ class AgentLoopEngineTest(unittest.TestCase):
             self.assertEqual(6, outcome.usage.output_tokens)
             self.assertEqual(8, outcome.usage.cached_input_tokens)
             self.assertEqual(("result.txt",), outcome.changed_files)
+            self.assertEqual(1, len(outcome.tool_results))
+            self.assertTrue(outcome.tool_results[0].ok)
+            self.assertEqual("call-1", outcome.tool_results[0].call_id)
+            self.assertEqual("write_file", outcome.tool_results[0].tool_name)
+            self.assertEqual(
+                ("result.txt",), outcome.tool_results[0].changed_files
+            )
             self.assertEqual("done", Path(directory, "result.txt").read_text())
             self.assertIs(outcome, agent.last_outcome)
+
+    def test_structured_tool_failure_survives_into_run_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient(
+                [
+                    ChatResponse(
+                        "",
+                        (
+                            ToolCall(
+                                "call-1",
+                                "read_file",
+                                '{"path":"missing.txt","extra":true}',
+                            ),
+                        ),
+                    ),
+                    ChatResponse("I could not read the invalid request."),
+                ]
+            )
+            agent = Agent(client, ToolRegistry(directory))
+
+            outcome = agent.run_outcome("Try an invalid tool call")
+
+            self.assertTrue(outcome.succeeded)
+            self.assertEqual(1, len(outcome.tool_results))
+            result = outcome.tool_results[0]
+            self.assertFalse(result.ok)
+            self.assertEqual("call-1", result.call_id)
+            self.assertEqual(ToolErrorType.INVALID_ARGUMENTS, result.error_type)
+            self.assertTrue(result.retryable)
 
     def test_successful_write_still_emits_lsp_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
