@@ -82,6 +82,18 @@ class CompletionPolicy(Protocol):
         ...
 
 
+class ToolObservingCompletionPolicy(CompletionPolicy, Protocol):
+    """Optional lifecycle hooks for policies that need tool evidence."""
+
+    def begin_run(self) -> None:
+        """Reset evidence that must not leak across Agent runs."""
+        ...
+
+    def observe_tool_results(self, results: tuple[ToolResult, ...]) -> None:
+        """Receive machine-readable results from the current run."""
+        ...
+
+
 class NonEmptyCompletionPolicy:
     """Minimum completion gate: an empty answer is not a completed task.
 

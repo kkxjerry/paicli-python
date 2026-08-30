@@ -58,7 +58,7 @@ git diff phase-06-cn..phase-07-cn -- paicli/agent.py paicli/tools.py
 
 其他模块都在这条主链路周围解决一个具体问题：
 
-Phase 0-5 的 Java 行为同步已经把执行内核和三类基础设施收敛为可复用组件：
+Phase 0-8 的 Java 行为同步已经把执行内核、编排和三类基础设施收敛为可复用组件：
 
 - 默认硬轮数由 20 调整为 50。
 - 连续 3 轮相同的工具调用和观察结果会判定为停滞。
@@ -70,9 +70,15 @@ Phase 0-5 的 Java 行为同步已经把执行内核和三类基础设施收敛�
 - 同轮工具按资源读写冲突分批；同一路径读写或写写不会再无条件并发。
 - 默认 CLI 已接入上下文、LLM 历史摘要、长期记忆、`save_memory` 和写后 LSP 诊断。
 - `LlmPlanner` 可为复杂任务生成计划，`PlanValidator` 与 `DagScheduler` 负责统一 DAG 校验、拓扑序和批次。
+- CLI 已支持 `react`、`plan`、`team`；`/plan` 会先展示校验后的 DAG，可执行、取消或补充要求后重新规划。
+- Plan Task 和 Team Worker 都是真实、独立 History 的 LLM SubAgent，不再是 Python 回调函数。
+- Reviewer 使用结构化 verdict；拒绝后只重做当前 Task，最多两次，失败或超限不会静默放行。
+- 只读 Task 可受控并发；具备写入、命令或验证权限的 Task 在没有 worktree 隔离时保持串行。
+- `FILE_READ`、`FILE_WRITE`、`COMMAND` 与 `VERIFICATION` Task 不能只靠文字声称完成，当前尝试必须有真实成功的工具证据。
 
 完整对齐边界见 [Java → Python behavior parity ledger](docs/java-parity.md)，实现留痕见
-[Phase 3-5 implementation notes](docs/phase-03-05-implementation.md)。
+[Phase 3-5 implementation notes](docs/phase-03-05-implementation.md) 与
+[Phase 6-8 implementation notes](docs/phase-06-08-implementation.md)。
 
 - `planning.py`、`multi_agent.py`：复杂任务如何拆分和协作。
 - `memory.py`、`rag.py`、`context.py`：模型应该看到哪些上下文。
@@ -149,19 +155,37 @@ python3 -m paicli --memory-file .paicli/memory.jsonl
 python3 -m paicli --no-memory
 ```
 
-Phase 5 已提供可直接调用的 LLM Planner，但 `/plan` 与 `/team` 尚未接入 CLI：
+三种执行模式均已接入 CLI：
 
-```python
-from paicli import LlmPlanner
+```bash
+# 默认单 Agent ReAct
+python3 -m paicli --mode react -p '读取 README 并总结'
 
-planner = LlmPlanner(client)
-plan = planner.create_plan("Inspect the implementation, edit it, and run tests")
-print(plan.render())
+# LLM Planner -> 校验 DAG -> Task SubAgents
+python3 -m paicli --mode plan -p '检查实现、修改代码并验证'
+
+# Planner -> Worker -> Reviewer -> 局部重试 -> 汇总
+python3 -m paicli --mode team -p '实现功能并完成独立审查'
+```
+
+交互模式也可以临时调用：
+
+```text
+/plan 检查实现、修改代码并验证
+/team 实现功能并完成独立审查
+```
+
+并发和审核上限可配置：
+
+```bash
+python3 -m paicli --plan-workers 4 --plan-revisions 2 --team-workers 2 --review-retries 2
 ```
 
 ## 安全边界
 
 - 文件、图片和快照路径不能越过 `--project-root`。
+- 只读 SubAgent 在 Schema 和执行端都看不到写工具；越权调用返回 `POLICY_DENIED`。
+- 没有独立 worktree 时，所有写入、命令和验证 Task 都串行执行。
 - Shell 默认关闭，第 6 期还会拒绝明显破坏性命令。
 - Web 工具拒绝本地地址、私网 IP 和非 HTTP(S) 协议。
 - Runtime API 只监听 `127.0.0.1`。

@@ -1,0 +1,20 @@
+{
+  "plan": {
+    "cli_mode": true,
+    "max_ready_workers": 4,
+    "max_revisions": 2,
+    "validate_before_execution": true
+  },
+  "team": {
+    "max_ready_workers": 2,
+    "review_retries": 2,
+    "worker_histories_isolated": true
+  },
+  "intentional_python_improvements": {
+    "reviewer_error": "fail_task",
+    "review_retry_exhausted": "fail_task",
+    "parallel_task_types": ["FILE_READ", "ANALYSIS"],
+    "mutation_without_worktree": "serial",
+    "hidden_tool_call": "policy_denied"
+  }
+}

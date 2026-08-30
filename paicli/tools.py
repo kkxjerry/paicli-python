@@ -14,7 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Iterable
 
 from .tool_contracts import (
     ConcurrencyPolicy,
@@ -814,6 +814,134 @@ class ToolRegistry:
         return f"Created {project_type} project at {project.name}"
 
 
+class ScopedToolRuntime:
+    """Expose a capability-scoped view of one shared ``ToolRegistry``.
+
+    Sub-agents receive only the schemas they are allowed to use. A hallucinated
+    call to a hidden tool is also rejected at execution time, so tool scoping is
+    an authorization boundary rather than a prompt-only convention.
+    """
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        allowed_names: Iterable[str],
+        *,
+        scope_name: str = "scoped-agent",
+    ) -> None:
+        self.registry = registry
+        self.allowed_names = frozenset(str(name) for name in allowed_names)
+        self.scope_name = str(scope_name).strip() or "scoped-agent"
+        unknown = sorted(self.allowed_names - set(registry.names()))
+        if unknown:
+            raise ValueError(
+                "tool scope contains unknown names: " + ", ".join(unknown)
+            )
+
+    @classmethod
+    def read_only(
+        cls,
+        registry: ToolRegistry,
+        *,
+        scope_name: str = "read-only-agent",
+    ) -> ScopedToolRuntime:
+        allowed = []
+        for name in registry.names():
+            spec = registry.spec(name)
+            if spec is not None and spec.side_effect is ToolSideEffect.READ_ONLY:
+                allowed.append(name)
+        return cls(registry, allowed, scope_name=scope_name)
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return [
+            definition
+            for definition in self.registry.definitions()
+            if definition["function"]["name"] in self.allowed_names
+        ]
+
+    def names(self) -> list[str]:
+        return [name for name in self.registry.names() if name in self.allowed_names]
+
+    def spec(self, name: str) -> ToolSpec | None:
+        if name not in self.allowed_names:
+            return None
+        return self.registry.spec(name)
+
+    def validate_arguments(self, name: str, arguments_json: str) -> dict[str, Any]:
+        if name not in self.allowed_names:
+            raise ValueError(self._denied_message(name))
+        return self.registry.validate_arguments(name, arguments_json)
+
+    def execute(self, name: str, arguments_json: str) -> str:
+        return self.execute_result(name, arguments_json).content
+
+    def execute_result(self, name: str, arguments_json: str) -> ToolResult:
+        if name not in self.allowed_names:
+            return self._denied_result(name)
+        return self.registry.execute_result(name, arguments_json)
+
+    def execute_many(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[str]:
+        return [
+            result.content
+            for result in self.execute_many_results(
+                calls,
+                timeout_seconds=timeout_seconds,
+            )
+        ]
+
+    def execute_many_results(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[ToolResult]:
+        if not calls:
+            return []
+        results: list[ToolResult | None] = [None] * len(calls)
+        delegated_calls: list[tuple[str, str]] = []
+        delegated_positions: list[int] = []
+        for index, (name, arguments) in enumerate(calls):
+            if name not in self.allowed_names:
+                results[index] = self._denied_result(name)
+                continue
+            delegated_positions.append(index)
+            delegated_calls.append((name, arguments))
+
+        if delegated_calls:
+            delegated_results = self.registry.execute_many_results(
+                delegated_calls,
+                timeout_seconds=timeout_seconds,
+            )
+            for position, result in zip(
+                delegated_positions,
+                delegated_results,
+                strict=True,
+            ):
+                results[position] = result
+        return [
+            result if result is not None else self._denied_result(calls[index][0])
+            for index, result in enumerate(results)
+        ]
+
+    def _denied_result(self, name: str) -> ToolResult:
+        return ToolResult.failure(
+            name,
+            self._denied_message(name),
+            ToolErrorType.POLICY_DENIED,
+            retryable=False,
+        )
+
+    def _denied_message(self, name: str) -> str:
+        return (
+            f"Tool denied: {name!r} is outside the {self.scope_name} capability scope"
+        )
+
+
 def _elapsed_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
 
@@ -849,6 +977,7 @@ __all__ = [
     "ResourceMode",
     "ToolErrorType",
     "ToolHandler",
+    "ScopedToolRuntime",
     "ToolRegistry",
     "ToolResult",
     "ToolRisk",

@@ -13,6 +13,7 @@ import json
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Iterable, Protocol
@@ -366,6 +367,48 @@ class DagScheduler:
         return marked
 
 
+@dataclass(frozen=True)
+class TaskConcurrencyPolicy:
+    """Partition a ready DAG layer into bounded, side-effect-safe waves.
+
+    The planner's task type is not trusted as permission by itself. Phase 8
+    combines this scheduler with scoped tool runtimes: only FILE_READ and
+    ANALYSIS tasks may share a worker wave, and those workers receive read-only
+    tools. FILE_WRITE, COMMAND, and VERIFICATION tasks run alone until isolated
+    worktrees or explicit read/write sets are available.
+    """
+
+    max_workers: int = 1
+    parallel_task_types: frozenset[TaskType] = frozenset(
+        {TaskType.FILE_READ, TaskType.ANALYSIS}
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_workers < 1:
+            raise ValueError("max_workers must be positive")
+
+    def can_run_in_parallel(self, task: Task) -> bool:
+        return self.max_workers > 1 and task.task_type in self.parallel_task_types
+
+    def execution_waves(self, tasks: Iterable[Task]) -> list[list[Task]]:
+        waves: list[list[Task]] = []
+        current: list[Task] = []
+        for task in tasks:
+            if not self.can_run_in_parallel(task):
+                if current:
+                    waves.append(current)
+                    current = []
+                waves.append([task])
+                continue
+            current.append(task)
+            if len(current) >= self.max_workers:
+                waves.append(current)
+                current = []
+        if current:
+            waves.append(current)
+        return waves
+
+
 class Planner(Protocol):
     def create_plan(self, goal: str) -> ExecutionPlan:
         """Convert a goal into a validated plan."""
@@ -466,6 +509,30 @@ Rules:
             "task IDs when the exact work remains valid."
         )
         return self._generate(plan.goal, request_context=request_context)
+
+    def revise_plan(self, plan: ExecutionPlan, feedback: str) -> ExecutionPlan:
+        """Regenerate a complete plan from explicit pre-execution feedback."""
+
+        normalized = str(feedback).strip()
+        if not normalized:
+            raise ValueError("plan revision feedback cannot be empty")
+        request_context = (
+            "The user reviewed the validated plan before execution and requested "
+            "a revision.\n"
+            "Current plan:\n"
+            + plan.render()
+            + "\n\nRequested changes:\n"
+            + normalized
+            + "\nReturn a complete replacement plan, not a patch."
+        )
+        revised = self._generate(plan.goal, request_context=request_context)
+        revised.metadata.update(
+            {
+                "revision_of": plan.plan_id,
+                "revision_feedback": normalized,
+            }
+        )
+        return revised
 
     def _generate(self, goal: str, *, request_context: str) -> ExecutionPlan:
         user_prompt = f"Goal:\n{goal}"
@@ -581,9 +648,16 @@ TaskExecutor = Callable[[Task, dict[str, str]], str]
 class PlanExecuteAgent:
     """Execute a validated DAG and allow one bounded replacement plan."""
 
-    def __init__(self, planner: Planner, executor: TaskExecutor) -> None:
+    def __init__(
+        self,
+        planner: Planner,
+        executor: TaskExecutor,
+        *,
+        concurrency: TaskConcurrencyPolicy | None = None,
+    ) -> None:
         self.planner = planner
         self.executor = executor
+        self.concurrency = concurrency or TaskConcurrencyPolicy()
 
     def run(self, goal: str) -> ExecutionPlan:
         plan = self.planner.create_plan(goal)
@@ -606,37 +680,82 @@ class PlanExecuteAgent:
                         task.mark_skipped("no executable task remained")
                 break
 
-            for task in ready:
-                task.mark_running()
-                try:
-                    task_result = self.executor(task, dict(results))
-                except Exception as exc:
-                    message = f"{type(exc).__name__}: {exc}"
-                    task.mark_failed(message)
-                    if allow_replan:
-                        try:
-                            replacement = self.planner.replan(plan, task)
-                        except Exception as replan_error:
-                            task.error += (
-                                "; replan failed: "
-                                f"{type(replan_error).__name__}: {replan_error}"
-                            )
-                        else:
-                            if replacement is not plan:
-                                PlanValidator(require_tasks=True).validate(replacement)
-                                replacement.inherit_completed_from(plan)
-                                return self.execute(
-                                    replacement,
-                                    allow_replan=False,
-                                )
-                    DagScheduler.mark_blocked(plan)
-                    # Continue with other tasks in the same ready batch when
-                    # they are independent of the failed node.
-                    continue
+            for wave in self.concurrency.execution_waves(ready):
+                failures = self._execute_wave(wave, dict(results))
+                for task in wave:
+                    if task.status is TaskStatus.COMPLETED:
+                        results[task.id] = task.result
 
-                task.mark_completed(str(task_result))
-                results[task.id] = task.result
+                if failures and allow_replan:
+                    failed_task = failures[0]
+                    try:
+                        replacement = self.planner.replan(plan, failed_task)
+                    except Exception as replan_error:
+                        failed_task.error += (
+                            "; replan failed: "
+                            f"{type(replan_error).__name__}: {replan_error}"
+                        )
+                    else:
+                        if replacement is not plan:
+                            PlanValidator(require_tasks=True).validate(replacement)
+                            replacement.inherit_completed_from(plan)
+                            plan_setter = getattr(self.executor, "set_plan", None)
+                            if callable(plan_setter):
+                                plan_setter(replacement)
+                            return self.execute(replacement, allow_replan=False)
+
+                if failures:
+                    DagScheduler.mark_blocked(plan)
+                # Other tasks in the same ready layer remain eligible even when
+                # one independent branch failed.
         return plan
+
+    def _execute_wave(
+        self,
+        wave: list[Task],
+        results: dict[str, str],
+    ) -> list[Task]:
+        for task in wave:
+            task.mark_running()
+
+        if len(wave) == 1:
+            executions: list[tuple[Task, str | None, BaseException | None]] = []
+            task = wave[0]
+            try:
+                value = self.executor(task, dict(results))
+            except Exception as exc:  # normalized into task state below
+                executions.append((task, None, exc))
+            else:
+                executions.append((task, str(value), None))
+        else:
+            executor = ThreadPoolExecutor(
+                max_workers=min(self.concurrency.max_workers, len(wave)),
+                thread_name_prefix="paicli-plan-task",
+            )
+            futures = {
+                task.id: executor.submit(self.executor, task, dict(results))
+                for task in wave
+            }
+            executions = []
+            try:
+                for task in wave:
+                    try:
+                        value = futures[task.id].result()
+                    except Exception as exc:  # keep stable task ordering
+                        executions.append((task, None, exc))
+                    else:
+                        executions.append((task, str(value), None))
+            finally:
+                executor.shutdown(wait=True, cancel_futures=False)
+
+        failures: list[Task] = []
+        for task, value, error in executions:
+            if error is not None:
+                task.mark_failed(f"{type(error).__name__}: {error}")
+                failures.append(task)
+            else:
+                task.mark_completed(value or "")
+        return failures
 
     @staticmethod
     def _skip_blocked(plan: ExecutionPlan) -> None:
@@ -756,6 +875,7 @@ __all__ = [
     "StaticPlanner",
     "Task",
     "TaskExecutor",
+    "TaskConcurrencyPolicy",
     "TaskStatus",
     "TaskType",
 ]

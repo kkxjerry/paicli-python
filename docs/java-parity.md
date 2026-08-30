@@ -1,6 +1,6 @@
 # Java → Python behavior parity ledger
 
-This file is the Phase 0–5 source of truth for porting PaiCLI behavior. The goal
+This file is the Phase 0–8 source of truth for porting PaiCLI behavior. The goal
 is **behavioral parity at public boundaries**, not line-by-line Java
 translation.  Intentional Python improvements are recorded explicitly so a
 future change cannot silently reintroduce a Java limitation.
@@ -47,17 +47,35 @@ future change cannot silently reintroduce a Java limitation.
 | Failed independent branch | mode-dependent | executor returned immediately on first failure | blocked descendants skip; independent ready work continues | Deliberate improvement |
 | Replan state transfer | completed work mainly enters prompt text | replacement lost result map | matching completed tasks may be inherited into replacement | Deliberate improvement |
 
-## Explicitly out of scope after Phase 5
+## Phase 6–8 parity matrix
+
+| Capability | Java reference behavior | Python before Phase 6–8 | Python Phase 6–8 result | Decision |
+|---|---|---|---|---|
+| Public modes | ReAct plus `/plan` and `/team` | ReAct only | `--mode react|plan|team`, `/plan`, and `/team` | Match Java |
+| Plan execution | LLM plan followed by task Agent loops | planner was library-only | validated plan nodes run through real shared-loop workers | Match Java |
+| Plan review | execute/cancel/supplement before execution | absent | interactive `/plan` supports all three with bounded full-plan revision | Match Java |
+| Worker handoff | task plus dependency evidence | function received all result strings | structured packet with direct dependencies only | Improve isolation |
+| Worker implementation | LLM SubAgents | Python callbacks | isolated LLM Agents with independent history, budget and compactor | Match Java |
+| Reviewer | independent LLM reviewer | role enum only | strict verdict contract plus read-only inspection tools | Match and improve |
+| Reviewer retry | current step retried up to 2 times | absent | same worker retries only current task up to 2 times | Match Java |
+| Reviewer failure | may retain result and continue | absent | reviewer error, rejection or retry exhaustion fails task | Deliberate fail-closed improvement |
+| Final result | team result is summarized | no team result | isolated no-tool aggregator with deterministic fallback | Match behavior |
+| Ready-task concurrency | Plan up to 4, Team up to 2 | serial workers | same limits for capability-scoped read tasks | Match limits safely |
+| Concurrent mutation | no complete file-conflict isolation | absent | mutation-capable tasks are serial without worktrees | Deliberate safety improvement |
+| Hidden tool call | role separation mainly prompt-driven | no real roles | execution-time `POLICY_DENIED` outside role scope | Deliberate improvement |
+| Task completion | worker text may be accepted | non-empty answer only | read/write/command/verification tasks require current-attempt tool evidence | Deliberate improvement |
+
+## Explicitly out of scope after Phase 8
 
 The following remain separate phases and must not be advertised as completed:
 
-- `/plan` and `/team` CLI modes
-- Plan tasks executed by the shared LLM `AgentLoopEngine`
-- real Worker/Reviewer sub-agents
-- reviewer verdict, retry, and failure propagation
-- worker-level parallel execution and workspace isolation
+- separate model/provider selection for Planner, Worker and Reviewer
+- Team-level replanning after a reviewer rejects a plan assumption
+- per-worker Git worktrees, patch merge and semantic conflict resolution
 - default CLI HITL assembly
-- automatic turn snapshots, checkpoints, and evaluation harness
+- automatic turn snapshots, durable checkpoints and crash continuation
+- one global orchestration token/cost/time budget
+- Agent evaluation harness and reviewer-to-human calibration
 - production-grade memory conflict resolution and stale-memory invalidation
 
 ## Compatibility rules
@@ -70,13 +88,16 @@ The following remain separate phases and must not be advertised as completed:
 5. Budgets are recreated for every run; token and stagnation state never leak
    from one user turn to the next.
 
-## Phase 0–5 known boundaries
+## Phase 0–8 known boundaries
 
 - Token enforcement uses provider-reported `usage`. If a compatible endpoint
   omits usage, the loop still has stagnation and iteration protection but
   cannot infer exact billed tokens in this phase.
-- `NonEmptyCompletionPolicy` only prevents empty success. Repository tests,
-  diff checks, and reviewer verdicts remain later completion policies.
+- ReAct still uses `NonEmptyCompletionPolicy`. Plan/Team workers additionally
+  require current-attempt tool evidence for `FILE_READ`, `FILE_WRITE`, `COMMAND`
+  and `VERIFICATION`; pure `ANALYSIS` may use dependency evidence directly.
+  Acceptance-criteria semantics and repository-wide test gates are not fully
+  deterministic yet.
 - `AgentOutcome.changed_files` records structured file-resource claims from
   successful tools. Shell and undeclared MCP side effects are intentionally not guessed.
 - The built-in validator enforces the common JSON Schema subset documented in
@@ -89,5 +110,12 @@ The following remain separate phases and must not be advertised as completed:
   their token usage is not yet folded into the parent `AgentOutcome`.
 - Long-term memory remains append-only keyword retrieval; conflict resolution,
   update/delete, provenance, and staleness are later work.
-- `LlmPlanner` is a library capability in Phase 5. The default CLI remains ReAct
-  until `/plan` is wired in the next phase.
+- `--token-budget` remains a per-Agent limit. `OrchestrationResult` reports the
+  combined Planner/Worker/Reviewer/Aggregator usage, but concurrent agents do
+  not yet share one atomic budget reservation.
+- Plan and Team currently accept text tasks only; ReAct keeps `@image:` support.
+- The same `LlmClient` is shared by roles. Histories and context managers are
+  isolated, but role-specific model/provider selection is not implemented.
+- Worker concurrency is intentionally limited to `FILE_READ` and `ANALYSIS`
+  tasks whose runtime tool scope is read-only. Safe parallel code mutation needs
+  worktree or equivalent workspace isolation.

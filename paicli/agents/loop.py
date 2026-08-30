@@ -93,6 +93,9 @@ class AgentLoopEngine:
         )
         changed_files: list[str] = []
         tool_results: list[ToolResult] = []
+        begin_policy_run = getattr(self.completion_policy, "begin_run", None)
+        if callable(begin_policy_run):
+            begin_policy_run()
         self.history.append(dict(user_message))
 
         while True:
@@ -187,6 +190,13 @@ class AgentLoopEngine:
                 )
 
             tool_results.extend(results)
+            observe_results = getattr(
+                self.completion_policy,
+                "observe_tool_results",
+                None,
+            )
+            if callable(observe_results):
+                observe_results(tuple(results))
             for call, result in zip(response.tool_calls, results, strict=True):
                 self.on_event("result", result.content)
                 self.history.append(

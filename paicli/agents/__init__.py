@@ -7,6 +7,7 @@ from .models import (
     CompletionDecision,
     CompletionPolicy,
     FinishReason,
+    ToolObservingCompletionPolicy,
     NonEmptyCompletionPolicy,
     RunStatus,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "CompletionPolicy",
     "FinishReason",
     "NonEmptyCompletionPolicy",
+    "ToolObservingCompletionPolicy",
     "RunStatus",
     "ToolRuntime",
 ]

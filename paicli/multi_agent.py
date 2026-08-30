@@ -1,4 +1,9 @@
-"""Phase 5：基于角色的多 Agent 协作。
+"""Legacy Phase 5 educational callback-based multi-agent example.
+
+The production-facing Phase 7 implementation lives in ``subagents.py``,
+``review.py``, and ``orchestration.py``. It uses real isolated LLM Agents and a
+structured reviewer gate. The classes below remain unchanged for readers and
+older tests that follow the original 22-phase learning history.
 
     ExecutionPlan(DAG)
             |

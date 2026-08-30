@@ -31,6 +31,8 @@ class CliCommandParser:
         "help",
         "history",
         "model",
+        "plan",
+        "team",
         "tools",
     }
 
