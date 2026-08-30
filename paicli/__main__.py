@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 from .agent import Agent, AgentLoopError
+from .agents.budget import AgentBudget
 from .images import ImageAttachment, ImageProcessor
 from .interaction import CliCommand, CliCommandParser, PaiCliHistory, normalize_input
 from .llm_client import LlmClientFactory, LlmError, OpenAICompatibleClient
@@ -45,6 +46,25 @@ def env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def positive_int(value: str) -> int:
+    """argparse type for strictly positive loop and token limits."""
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def stagnation_window(value: str) -> int:
+    parsed = positive_int(value)
+    if parsed < 2:
+        raise argparse.ArgumentTypeError("must be at least 2")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """定义 CLI 启动参数，argparse 负责类型转换和 --help。"""
 
@@ -56,7 +76,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Directory exposed to file tools",
     )
-    parser.add_argument("--max-steps", type=int, default=20)
+    parser.add_argument(
+        "--max-steps",
+        type=positive_int,
+        default=AgentBudget.DEFAULT_HARD_MAX_ITERATIONS,
+    )
+    parser.add_argument(
+        "--stagnation-window",
+        type=stagnation_window,
+        default=AgentBudget.DEFAULT_STAGNATION_WINDOW,
+        help="Stop after this many identical tool/observation rounds",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=positive_int,
+        help="Optional hard input+output token budget for one run",
+    )
     parser.add_argument(
         "--provider",
         choices=sorted(LlmClientFactory.PROVIDERS),
@@ -114,6 +149,8 @@ def main() -> int:
         client,
         tools,
         max_steps=args.max_steps,
+        token_budget=args.token_budget,
+        stagnation_window=args.stagnation_window,
         # Agent.run 会自己返回 answer，run_once 统一打印，因此事件回调不重复渲染 answer。
         on_event=lambda kind, text: (
             renderer.event(kind, text) if kind != "answer" else None
@@ -188,7 +225,9 @@ def handle_command(
         print(
             f"model={getattr(client, 'model', 'unknown')} "
             f"provider={getattr(client, 'provider', 'custom')} "
-            f"messages={len(agent.history)} max_steps={agent.max_steps}"
+            f"messages={len(agent.history)} max_steps={agent.max_steps} "
+            f"stagnation_window={agent.stagnation_window} "
+            f"token_budget={agent.token_budget or 'unlimited'}"
         )
     elif command.name == "model":
         # 切模型只替换 client，保留已有对话历史和工具注册表。

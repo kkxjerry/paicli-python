@@ -42,12 +42,16 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatResponse:
-    """Agent 真正需要的标准化模型响应。"""
+    """Agent 真正需要的标准化模型响应与用量。"""
 
     # 模型只调工具时，content 通常为空。
     content: str
     # 一个回复可同时请求多个工具。
     tool_calls: tuple[ToolCall, ...] = ()
+    # OpenAI-compatible usage；Provider 不返回时保持 0。
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
 
 
 class LlmClient(Protocol):
@@ -166,10 +170,49 @@ class OpenAICompatibleClient:
             )
             for item in message.get("tool_calls") or []
         )
+        usage = root.get("usage") or {}
+        input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
+        cached_input_tokens = _cached_input_tokens(usage)
         return ChatResponse(
             content=message.get("content") or "",
             tool_calls=calls,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
         )
+
+
+def _usage_int(usage: object, *keys: str) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in keys:
+        value = usage.get(key)
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _cached_input_tokens(usage: object) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    direct = _usage_int(
+        usage,
+        "cached_tokens",
+        "cached_input_tokens",
+        "prompt_cache_hit_tokens",
+        "input_cache_hit_tokens",
+    )
+    if direct:
+        return direct
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(key)
+        cached = _usage_int(details, "cached_tokens", "cached_input_tokens")
+        if cached:
+            return cached
+    return 0
 
 
 def _is_loopback_url(url: str) -> bool:

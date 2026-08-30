@@ -1,0 +1,14 @@
+{
+  "java_reference_commit": "13eff7f",
+  "python_baseline_commit": "718411e",
+  "react": {
+    "hard_max_iterations": 50,
+    "stagnation_window": 3,
+    "token_budget": null
+  },
+  "intentional_python_improvements": {
+    "empty_final_answer": "reject",
+    "stagnation_signature": "canonical_tool_arguments_plus_observation_hash",
+    "shell_default": "disabled"
+  }
+}

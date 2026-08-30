@@ -52,10 +52,22 @@ git diff phase-06-cn..phase-07-cn -- paicli/agent.py paicli/tools.py
   -> 收到 tool_calls
   -> 并行执行工具
   -> 回灌 tool 结果
-  -> 没有 tool_calls 时结束
+  -> 没有 tool_calls 时进入 completion policy
+  -> 验证通过才结束，否则反馈后继续
 ```
 
 其他模块都在这条主链路周围解决一个具体问题：
+
+Phase 0-2 的 Java 行为同步已经把这条循环抽到 `paicli/agents/loop.py`：
+
+- 默认硬轮数由 20 调整为 50。
+- 连续 3 轮相同的工具调用和观察结果会判定为停滞。
+- 可通过 `--token-budget` 设置单次运行的硬 Token 上限；默认不限制。
+- OpenAI-compatible `usage` 会累计到结构化 `AgentOutcome`。
+- `Agent.run()` 继续返回字符串；编排代码可用 `Agent.run_outcome()` 读取结束原因、Token 和改动文件。
+- 模型返回空内容且没有工具调用时，不再直接视为成功完成。
+
+完整对齐边界见 [Java → Python behavior parity ledger](docs/java-parity.md)。
 
 - `planning.py`、`multi_agent.py`：复杂任务如何拆分和协作。
 - `memory.py`、`rag.py`、`context.py`：模型应该看到哪些上下文。
@@ -117,6 +129,12 @@ Shell 默认关闭，需要时显式开启：
 
 ```bash
 python3 -m paicli --allow-shell
+```
+
+循环保护默认是 50 轮上限、连续 3 轮无进展停止；自动化任务还可以设置硬 Token 上限：
+
+```bash
+python3 -m paicli --max-steps 50 --stagnation-window 3 --token-budget 50000
 ```
 
 ## 安全边界

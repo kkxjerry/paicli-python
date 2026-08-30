@@ -40,7 +40,12 @@ class RecordingHandler(BaseHTTPRequestHandler):
                             ],
                         }
                     }
-                ]
+                ],
+                "usage": {
+                    "prompt_tokens": 21,
+                    "completion_tokens": 4,
+                    "prompt_tokens_details": {"cached_tokens": 7},
+                },
             }
         ).encode("utf-8")
         self.send_response(200)
@@ -94,6 +99,9 @@ class LlmHttpTest(unittest.TestCase):
         self.assertEqual("Bearer secret", RecordingHandler.authorization)
         self.assertEqual("read_file", response.tool_calls[0].name)
         self.assertEqual('{"path":"README.md"}', response.tool_calls[0].arguments)
+        self.assertEqual(21, response.input_tokens)
+        self.assertEqual(4, response.output_tokens)
+        self.assertEqual(7, response.cached_input_tokens)
 
     def test_loopback_endpoint_ignores_environment_proxy(self) -> None:
         """SSH 隧道的 127.0.0.1 请求必须直连，不能被系统代理接管。"""
