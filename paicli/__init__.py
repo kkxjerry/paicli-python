@@ -1,4 +1,4 @@
-"""PaiCLI Python: a coding agent built across 22 learning phases."""
+"""PaiCLI Python — a local coding-agent harness with three execution modes."""
 
 from .agent import Agent, AgentLoopError
 from .agents import (
@@ -20,8 +20,35 @@ from .bootstrap import (
     build_application_runtime,
     build_react_runtime,
 )
-from .llm_client import ChatResponse, OpenAICompatibleClient, ToolCall
+from .evaluation import (
+    EvalSuite,
+    EvalTask,
+    EvaluationReport,
+    EvaluationRunner,
+    compare_reports,
+    load_suite,
+)
+from .execution import CoordinatedRun, RunCoordinator
+from .llm_client import (
+    ChatResponse,
+    LlmClient,
+    LlmClientFactory,
+    LlmError,
+    OpenAICompatibleClient,
+    RetryingLlmClient,
+    ToolCall,
+    unwrap_llm_client,
+)
+from .managed_memory import ManagedLongTermMemory, MemoryStatus
 from .memory import ConversationHistoryCompactor, LongTermMemory, MemoryManager
+from .observability import (
+    ModelPricing,
+    PricingCatalog,
+    RunBudget,
+    RunBudgetExceeded,
+    RunLimits,
+    TraceStore,
+)
 from .orchestration import (
     AggregationResult,
     DeterministicResultAggregator,
@@ -30,9 +57,6 @@ from .orchestration import (
     OrchestrationResult,
     OrchestrationStatus,
     PlanModeRuntime,
-    PlanReviewAction,
-    PlanReviewDecision,
-    PlanReviewHandler,
     TaskRunRecord,
     TeamModeRuntime,
 )
@@ -42,6 +66,8 @@ from .planning import (
     LlmPlanner,
     PlanExecuteAgent,
     PlanGenerationError,
+    PlanReviewAction,
+    PlanReviewDecision,
     PlanValidationError,
     PlanValidator,
     StaticPlanner,
@@ -50,7 +76,18 @@ from .planning import (
     TaskStatus,
     TaskType,
 )
+from .rag import (
+    CodeChunk,
+    CodeChunker,
+    CodeIndex,
+    EmbeddingClient,
+    OpenAICompatibleEmbeddingClient,
+    SearchResult,
+    VectorStore,
+)
 from .review import ReviewResult, ReviewRun, ReviewVerdict, ReviewerAgent
+from .safety import RollbackPolicy, WorkspaceRunGuard
+from .state import RunStateStore, StoredRun, StoredRunStatus
 from .subagents import (
     DependencyResult,
     SubAgent,
@@ -73,54 +110,80 @@ from .tools import (
     ToolSpec,
 )
 
-__version__ = "0.22.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "Agent",
-    "AggregationResult",
-    "ApplicationRuntime",
     "AgentBudget",
     "AgentLoopEngine",
     "AgentLoopError",
     "AgentOutcome",
+    "AggregationResult",
+    "ApplicationRuntime",
     "BudgetExitReason",
     "ChatResponse",
-    "ConcurrencyPolicy",
-    "ConversationHistoryCompactor",
-    "DependencyResult",
-    "DeterministicResultAggregator",
-    "DagScheduler",
+    "CodeChunk",
+    "CodeChunker",
+    "CodeIndex",
     "CompletionDecision",
     "CompletionPolicy",
+    "ConcurrencyPolicy",
+    "CoordinatedRun",
+    "ConversationHistoryCompactor",
+    "DagScheduler",
+    "DependencyResult",
+    "DeterministicResultAggregator",
+    "EmbeddingClient",
+    "EvalSuite",
+    "EvalTask",
+    "EvaluationReport",
+    "EvaluationRunner",
     "ExecutionPlan",
     "FinishReason",
+    "LlmClient",
+    "LlmClientFactory",
+    "LlmError",
     "LlmPlanner",
     "LlmResultAggregator",
     "LongTermMemory",
+    "ManagedLongTermMemory",
     "MemoryManager",
+    "MemoryStatus",
+    "ModelPricing",
     "NonEmptyCompletionPolicy",
+    "OpenAICompatibleClient",
+    "OpenAICompatibleEmbeddingClient",
     "OrchestrationMode",
     "OrchestrationResult",
     "OrchestrationStatus",
-    "OpenAICompatibleClient",
     "PlanExecuteAgent",
+    "PlanGenerationError",
     "PlanModeRuntime",
     "PlanReviewAction",
     "PlanReviewDecision",
-    "PlanReviewHandler",
-    "PlanGenerationError",
     "PlanValidationError",
     "PlanValidator",
+    "PricingCatalog",
     "ReactRuntime",
+    "ResourceAccess",
+    "ResourceMode",
+    "RetryingLlmClient",
     "ReviewResult",
     "ReviewRun",
     "ReviewVerdict",
     "ReviewerAgent",
-    "ResourceAccess",
-    "ResourceMode",
+    "RollbackPolicy",
+    "RunBudget",
+    "RunBudgetExceeded",
+    "RunCoordinator",
+    "RunLimits",
+    "RunStateStore",
     "RunStatus",
     "ScopedToolRuntime",
+    "SearchResult",
     "StaticPlanner",
+    "StoredRun",
+    "StoredRunStatus",
     "SubAgent",
     "SubAgentFactory",
     "SubAgentRole",
@@ -134,15 +197,21 @@ __all__ = [
     "TeamModeRuntime",
     "ToolCall",
     "ToolErrorType",
-    "ToolResult",
     "ToolObservingCompletionPolicy",
+    "ToolResult",
     "ToolRisk",
     "ToolRuntime",
     "ToolRegistry",
     "ToolScope",
     "ToolSideEffect",
     "ToolSpec",
+    "TraceStore",
+    "VectorStore",
+    "WorkspaceRunGuard",
     "build_application_runtime",
     "build_react_runtime",
+    "compare_reports",
+    "load_suite",
+    "unwrap_llm_client",
     "__version__",
 ]

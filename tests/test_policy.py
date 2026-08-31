@@ -7,9 +7,13 @@ from pathlib import Path
 
 from paicli.policy import (
     ApprovalDecision,
+    ApprovalMode,
+    ApprovalRequest,
     ApprovalResult,
     AuditLog,
+    ConsoleApprovalHandler,
     HitlToolRegistry,
+    RiskLevel,
 )
 from paicli.tools import ToolRegistry
 
@@ -36,6 +40,45 @@ class PolicyTest(unittest.TestCase):
             # Assert：文件写入成功，且审批器确实收到 write_file。
             self.assertEqual("Wrote a.txt", result)
             self.assertEqual("write_file", calls[0].tool_name)
+
+    def test_write_approval_contains_unified_diff_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "a.txt").write_text("old\n", encoding="utf-8")
+            requests = []
+            guarded = HitlToolRegistry(
+                ToolRegistry(directory),
+                lambda request: requests.append(request)
+                or ApprovalResult(ApprovalDecision.DENY),
+            )
+
+            guarded.execute(
+                "write_file",
+                '{"path":"a.txt","content":"new\\n"}',
+            )
+
+            self.assertIn("--- a/a.txt", requests[0].preview)
+            self.assertIn("+++ b/a.txt", requests[0].preview)
+            self.assertIn("-old", requests[0].preview)
+            self.assertIn("+new", requests[0].preview)
+            self.assertEqual("old\n", Path(directory, "a.txt").read_text())
+
+    def test_non_interactive_approval_modes_are_explicit(self) -> None:
+        request = ApprovalRequest(
+            "write_file",
+            {"path": "a.txt"},
+            RiskLevel.MEDIUM,
+            "writes",
+            "preview",
+        )
+
+        self.assertIs(
+            ApprovalDecision.APPROVE,
+            ConsoleApprovalHandler(ApprovalMode.ALLOW)(request).decision,
+        )
+        self.assertIs(
+            ApprovalDecision.DENY,
+            ConsoleApprovalHandler(ApprovalMode.DENY)(request).decision,
+        )
 
     def test_policy_blocks_destructive_command_before_hitl(self) -> None:
         """验证毁灭性命令在进入人工审批之前就被硬策略拦截。"""

@@ -14,7 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol
 
 from .tool_contracts import (
     ConcurrencyPolicy,
@@ -29,6 +29,22 @@ from .tool_contracts import (
     ToolSpec,
 )
 from .tool_validation import SchemaValidationError, validate_json_schema
+
+
+class ToolGateway(Protocol):
+    """Catalog plus structured execution surface used by every Agent mode."""
+
+    def definitions(self) -> list[dict[str, Any]]: ...
+    def names(self) -> list[str]: ...
+    def spec(self, name: str) -> ToolSpec | None: ...
+    def execute(self, name: str, arguments_json: str) -> str: ...
+    def execute_result(self, name: str, arguments_json: str) -> ToolResult: ...
+    def execute_many_results(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[ToolResult]: ...
 
 
 @dataclass(frozen=True)
@@ -824,7 +840,7 @@ class ScopedToolRuntime:
 
     def __init__(
         self,
-        registry: ToolRegistry,
+        registry: ToolGateway,
         allowed_names: Iterable[str],
         *,
         scope_name: str = "scoped-agent",
@@ -841,7 +857,7 @@ class ScopedToolRuntime:
     @classmethod
     def read_only(
         cls,
-        registry: ToolRegistry,
+        registry: ToolGateway,
         *,
         scope_name: str = "read-only-agent",
     ) -> ScopedToolRuntime:
@@ -976,6 +992,7 @@ __all__ = [
     "ResourceAccess",
     "ResourceMode",
     "ToolErrorType",
+    "ToolGateway",
     "ToolHandler",
     "ScopedToolRuntime",
     "ToolRegistry",

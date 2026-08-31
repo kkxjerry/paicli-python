@@ -1,192 +1,364 @@
 # PaiCLI Python
 
-[![CI](https://github.com/kkxjerry/paicli-python/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/kkxjerry/paicli-python/actions/workflows/ci.yml)
-
-PaiCLI Java 项目的 22 期 Python 学习实现。每一期都有独立 Git 提交和
-`phase-xx-cn` 中文注释标签，可从最小 ReAct 循环逐步读到完整 Agent 工程。
-
-这不是逐行翻译 Java，而是保留每一期的核心设计，用 Python 标准库实现
-可运行、可测试的最小版本。
-
-## 从第一期开始
-
-```bash
-git switch --detach phase-01-cn
-python3 -m unittest discover -s tests -v
-```
-
-看完后进入第二期：
-
-```bash
-git diff phase-01-cn..phase-02-cn
-git switch --detach phase-02-cn
-python3 -m unittest discover -s tests -v
-```
-
-回到完整版本：
-
-```bash
-git switch develop
-```
-
-`phase-xx` 保留原始精简实现，`phase-xx-cn` 是功能相同、补齐中文注释的
-学习版。第一次阅读建议使用 `-cn` 标签。
-
-不要只数项目总行数。每次只看当前阶段新增的文件和测试：
-
-```bash
-git diff --stat phase-06-cn..phase-07-cn
-git diff phase-06-cn..phase-07-cn -- paicli/agent.py paicli/tools.py
-```
-
-完整阶段索引见 [PHASES.md](PHASES.md)。
-
-## 核心主链路
-
-`paicli/agent.py` 中的 `Agent.run()` 始终是主干：
+PaiCLI is a local coding-agent harness with three real execution modes:
 
 ```text
-用户输入
-  -> 组装上下文
-  -> 调用模型
-  -> 收到 tool_calls
-  -> 并行执行工具
-  -> 回灌 tool 结果
-  -> 没有 tool_calls 时进入 completion policy
-  -> 验证通过才结束，否则反馈后继续
+ReAct: model <-> tools until a completion gate accepts the result
+Plan:  LLM Planner -> validated DAG -> isolated task workers -> final answer
+Team:  Planner -> workers -> read-only Reviewer -> local repair -> final answer
 ```
 
-其他模块都在这条主链路周围解决一个具体问题：
+The Agent runtime, file changes, tests, memory, snapshots, checkpoints, traces,
+and evaluation all run on the local machine. Only model inference is sent to the
+configured provider. The default integration is Alibaba Cloud Model Studio
+(DashScope) through its OpenAI-compatible chat-completions API.
 
-Phase 0-8 的 Java 行为同步已经把执行内核、编排和三类基础设施收敛为可复用组件：
+## What is implemented
 
-- 默认硬轮数由 20 调整为 50。
-- 连续 3 轮相同的工具调用和观察结果会判定为停滞。
-- 可通过 `--token-budget` 设置单次运行的硬 Token 上限；默认不限制。
-- OpenAI-compatible `usage` 会累计到结构化 `AgentOutcome`。
-- `Agent.run()` 继续返回字符串；编排代码可用 `Agent.run_outcome()` 读取结束原因、Token 和改动文件。
-- 模型返回空内容且没有工具调用时，不再直接视为成功完成。
-- 工具参数在执行端做 JSON Schema 校验，结果用 `ToolResult` 区分参数错误、策略拒绝、超时和执行错误。
-- 同轮工具按资源读写冲突分批；同一路径读写或写写不会再无条件并发。
-- 默认 CLI 已接入上下文、LLM 历史摘要、长期记忆、`save_memory` 和写后 LSP 诊断。
-- `LlmPlanner` 可为复杂任务生成计划，`PlanValidator` 与 `DagScheduler` 负责统一 DAG 校验、拓扑序和批次。
-- CLI 已支持 `react`、`plan`、`team`；`/plan` 会先展示校验后的 DAG，可执行、取消或补充要求后重新规划。
-- Plan Task 和 Team Worker 都是真实、独立 History 的 LLM SubAgent，不再是 Python 回调函数。
-- Reviewer 使用结构化 verdict；拒绝后只重做当前 Task，最多两次，失败或超限不会静默放行。
-- 只读 Task 可受控并发；具备写入、命令或验证权限的 Task 在没有 worktree 隔离时保持串行。
-- `FILE_READ`、`FILE_WRITE`、`COMMAND` 与 `VERIFICATION` Task 不能只靠文字声称完成，当前尝试必须有真实成功的工具证据。
+- One shared `AgentLoopEngine` for ReAct and every SubAgent.
+- Real CLI modes: `react`, `plan`, and `team`.
+- DashScope, GLM, DeepSeek, StepFun, Kimi, and local/remote vLLM providers.
+- Function Calling with execution-time JSON Schema validation.
+- LLM-generated plans with bounded JSON repair and deterministic DAG checks.
+- Isolated Worker, Reviewer, and Aggregator histories and tool capabilities.
+- Reviewer approval based on actual changed-file reads, not worker narration.
+- Reviewer `changes_requested` retries only the current task, with a hard limit.
+- HITL for writes and commands, unified diff previews, hard command policy, and
+  redacted audit records.
+- BEFORE/AFTER workspace snapshots, rollback policy, SQLite checkpoints, and
+  resumable interrupted Plan/Team runs.
+- Parent-child traces for model calls, tool calls, spans, Token usage, latency,
+  failures, and configurable cost estimates.
+- Persistent hybrid code retrieval: symbol + SQLite FTS5/BM25 + lexical cosine
+  + optional embeddings, fused through RRF and returned with source line spans.
+- Versioned long-term memory with IDs, provenance, verification, staleness, and
+  soft deletion.
+- A fixed coding benchmark and baseline/candidate comparison reports.
 
-完整对齐边界见 [Java → Python behavior parity ledger](docs/java-parity.md)，实现留痕见
-[Phase 3-5 implementation notes](docs/phase-03-05-implementation.md) 与
-[Phase 6-8 implementation notes](docs/phase-06-08-implementation.md)。
+The original `phase-xx` educational tags remain available. Current `develop`
+is the integrated product line; do not infer current behavior from an old tag.
 
-- `planning.py`、`multi_agent.py`：复杂任务如何拆分和协作。
-- `memory.py`、`rag.py`、`context.py`：模型应该看到哪些上下文。
-- `policy.py`、`snapshot.py`：写文件和执行命令如何可控、可恢复。
-- `mcp.py`、`mcp_resources.py`、`skills.py`：能力如何扩展。
-- `runtime.py`、`rendering.py`、`interaction.py`：如何成为可用的 CLI 产品。
+## Requirements
 
-## 测试
+- Python 3.11 or 3.12
+- Git
+- A model endpoint that supports the OpenAI-compatible
+  `/chat/completions` protocol
+- For coding tasks that execute tests: the target repository's own toolchain
 
-项目核心只使用 Python 标准库。完整测试不需要 API Key，也不访问外部网络：
+No third-party Python package is required for the core runtime.
+
+## Install
 
 ```bash
-python3 -m unittest discover -s tests -v
+git clone <repository-url> paicli-python
+cd paicli-python
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
-## 连接模型
+Verify the installation without contacting a model:
+
+```bash
+python -m paicli --help
+python -m unittest discover -s tests -q
+```
+
+The normal test suite uses deterministic fake clients and local HTTP servers.
+Real-provider tests are opt-in so CI remains fast, reproducible, and free of
+API charges.
+
+## Configure DashScope
+
+Copy the template:
 
 ```bash
 cp .env.example .env
 ```
 
-旧的通用 OpenAI-compatible 配置：
+Set these values in `.env`:
 
 ```dotenv
-PAICLI_API_KEY=your-key
-PAICLI_MODEL=your-model
-PAICLI_BASE_URL=https://your-provider.example/v1
+DASHSCOPE_API_KEY=your-real-key
+DASHSCOPE_MODEL=qwen-plus
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_CONTEXT_WINDOW=131072
 ```
 
-或者使用第 8 期的 provider 工厂：
+`.env` is ignored by Git. Do not paste, print, trace, or commit the key.
 
-```dotenv
-DEEPSEEK_API_KEY=your-key
-DEEPSEEK_MODEL=deepseek-chat
-```
+Check chat and Tool Calling before allowing file writes:
 
 ```bash
-python3 -m paicli --provider deepseek
+python -m paicli --provider dashscope --check-model chat
+python -m paicli --provider dashscope --check-model tools
 ```
 
-先不运行 Agent，只检查真实模型对话和 Tool Calling：
+## Run ReAct
+
+Read-only example:
 
 ```bash
-python3 -m paicli --provider deepseek --check-model chat
-python3 -m paicli --provider deepseek --check-model tools
+python -m paicli \
+  --provider dashscope \
+  --mode react \
+  --project-root ./demo \
+  -p "Read README.md and summarize the public API."
 ```
 
-A40 上已部署 `Qwen3.5-9B` vLLM 服务，服务只监听服务器回环地址。
-通过 SSH 隧道连接后，将 provider 换成 `vllm`。详细说明见
-[真实模型与 vLLM 接入笔记](docs/real-model-and-vllm.md)。
-
-图片输入使用第 21 期语法：
+Coding example with explicit shell capability and interactive approvals:
 
 ```bash
-python3 -m paicli -p '解释这张截图 @image:screen.png'
+python -m paicli \
+  --provider dashscope \
+  --mode react \
+  --project-root ./demo \
+  --allow-shell \
+  --approval-mode ask \
+  -p "Fix the failing unit test and run the complete suite."
 ```
 
-Shell 默认关闭，需要时显式开启：
+`--allow-shell` exposes `execute_command`; `--approval-mode ask` still requires
+confirmation before each command and file mutation. A command preview or
+unified diff is displayed before approval.
+
+## Run Plan mode
+
+Non-interactive execution after deterministic plan validation:
 
 ```bash
-python3 -m paicli --allow-shell
+python -m paicli \
+  --provider dashscope \
+  --mode plan \
+  --project-root ./demo \
+  --allow-shell \
+  --approval-mode ask \
+  -p "Inspect the implementation, add subtract(), add tests, and run all tests."
 ```
 
-循环保护默认是 50 轮上限、连续 3 轮无进展停止；自动化任务还可以设置硬 Token 上限：
+Interactive mode adds plan review and bounded revision:
 
 ```bash
-python3 -m paicli --max-steps 50 --stagnation-window 3 --token-budget 50000
+python -m paicli --provider dashscope --project-root ./demo --allow-shell
+
+> /plan Inspect the implementation, add subtract(), add tests, and run all tests.
 ```
 
-默认长期记忆写入 `~/.paicli/memory.jsonl`，也可以指定路径或关闭：
+The planner proposes a complete JSON DAG. Code validates IDs, dependencies,
+cycles, topological order, and the rule that every `FILE_WRITE` task has a
+downstream `VERIFICATION` task. Invalid plans receive one bounded repair
+request. Interactive plan review supports execute, cancel, or supplemental
+requirements followed by a complete replan.
+
+## Run Team mode
 
 ```bash
-python3 -m paicli --memory-file .paicli/memory.jsonl
-python3 -m paicli --no-memory
+python -m paicli \
+  --provider dashscope \
+  --mode team \
+  --project-root ./demo \
+  --allow-shell \
+  --approval-mode ask \
+  -p "Fix division-by-zero handling, add tests, run them, and review the actual changes."
 ```
 
-三种执行模式均已接入 CLI：
-
-```bash
-# 默认单 Agent ReAct
-python3 -m paicli --mode react -p '读取 README 并总结'
-
-# LLM Planner -> 校验 DAG -> Task SubAgents
-python3 -m paicli --mode plan -p '检查实现、修改代码并验证'
-
-# Planner -> Worker -> Reviewer -> 局部重试 -> 汇总
-python3 -m paicli --mode team -p '实现功能并完成独立审查'
-```
-
-交互模式也可以临时调用：
+Team flow:
 
 ```text
-/plan 检查实现、修改代码并验证
-/team 实现功能并完成独立审查
+Planner
+  -> deterministic DAG validation
+  -> task-scoped Worker
+  -> read-only Reviewer
+       approved            -> task completed
+       changes_requested   -> same task/worker retries locally
+       rejected/error      -> task failed
+  -> failed descendants skipped; independent branches continue
+  -> no-tool final Aggregator
 ```
 
-并发和审核上限可配置：
+Read-only tasks may run concurrently. `FILE_WRITE`, `COMMAND`, and
+`VERIFICATION` tasks run serially in the shared workspace. PaiCLI does not claim
+safe concurrent mutation until per-worker worktrees and merge semantics exist.
+
+## Safety model
+
+The model never executes code directly. Every operation passes through:
+
+```text
+Tool Schema -> runtime validation -> hard policy -> HITL -> resource scheduler
+            -> handler -> typed ToolResult -> trace/checkpoint
+```
+
+Important defaults:
+
+- File access is restricted to `--project-root`, including symlink resolution.
+- Shell is hidden unless `--allow-shell` is set.
+- Side effects require HITL in the production CLI.
+- `approval-mode=ask` is interactive; `deny` fails closed; `allow` is an
+  explicit automation choice and should be used only in disposable workspaces.
+- Obvious destructive command patterns are denied before human approval.
+- Failed/partial runs roll back to their BEFORE snapshot by default.
+- API keys and common secret fields are redacted from traces and audit logs.
+
+See [SECURITY.md](SECURITY.md) for the trust boundary and residual risks.
+
+## Snapshots, rollback, and recovery
+
+Each coordinated run records:
+
+```text
+.paicli/runs.db       durable run/DAG/review/checkpoint state
+.paicli/traces.db     spans, model calls, tool calls, events, and metrics
+.paicli/snapshots/    compressed workspace snapshots
+.paicli/audit/        redacted HITL decisions
+```
+
+List recent runs without connecting to a model:
 
 ```bash
-python3 -m paicli --plan-workers 4 --plan-revisions 2 --team-workers 2 --review-retries 2
+python -m paicli --project-root ./demo --list-runs
 ```
 
-## 安全边界
+Resume an interrupted or failed run:
 
-- 文件、图片和快照路径不能越过 `--project-root`。
-- 只读 SubAgent 在 Schema 和执行端都看不到写工具；越权调用返回 `POLICY_DENIED`。
-- 没有独立 worktree 时，所有写入、命令和验证 Task 都串行执行。
-- Shell 默认关闭，第 6 期还会拒绝明显破坏性命令。
-- Web 工具拒绝本地地址、私网 IP 和非 HTTP(S) 协议。
-- Runtime API 只监听 `127.0.0.1`。
-- Chrome DevTools MCP 配置只生成启动参数，不会自行启动浏览器或进程。
+```bash
+python -m paicli \
+  --provider dashscope \
+  --project-root ./demo \
+  --allow-shell \
+  --resume run_<id>
+```
+
+Before a mutating task starts, PaiCLI stores a task-level snapshot. After a
+process interruption it restores the uncertain task boundary before retrying.
+If that snapshot is missing, it restores the complete run snapshot and restarts
+the DAG rather than blindly replaying a possibly committed side effect.
+
+Detailed semantics: [docs/recovery.md](docs/recovery.md).
+
+## Budgets, tracing, and cost
+
+Per-Agent protections:
+
+```text
+--max-steps 50
+--stagnation-window 3
+--token-budget <per-agent-token-limit>
+```
+
+Parent orchestration limits shared by Planner, Workers, Reviewers, retries, and
+Aggregator:
+
+```text
+--max-run-tokens 100000
+--max-run-cost-cny 10
+--max-run-seconds 900
+--max-model-calls 50
+--max-tool-calls 100
+```
+
+Token usage comes from the provider response. Prices change over time, so
+PaiCLI does not hard-code a price table. Configure verified prices for the
+exact provider/model:
+
+```dotenv
+PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_INPUT_CNY_PER_MILLION=
+PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_OUTPUT_CNY_PER_MILLION=
+PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_CACHED_CNY_PER_MILLION=0
+```
+
+When prices are absent, reports show `unpriced_model_calls` instead of falsely
+reporting zero cost.
+
+## Code retrieval and memory
+
+The production CLI builds `.paicli/code-index.db` by default and exposes
+`search_code`. Results contain the file, exact line range, symbol, retrieval
+channels, and source text. Disable it with `--no-rag` or choose a path with
+`--rag-path`.
+
+The default long-term memory is `~/.paicli/memory.db`; choose another path with
+`--memory-file`. Explicit `.jsonl` paths keep the original educational
+append-only implementation. SQLite memory adds deduplication, verification,
+source hashes, stale marking, and soft deletion. Disable memory with
+`--no-memory`.
+
+## Fixed-task evaluation
+
+Run the repository's real-model smoke benchmark:
+
+```bash
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --output reports/dashscope-current.json
+```
+
+Compare a baseline and candidate:
+
+```bash
+paicli-eval compare \
+  reports/baseline.json \
+  reports/dashscope-current.json \
+  --output reports/comparison.json
+```
+
+A report includes task/assertion success, Git commit, model, model/tool errors,
+Token usage, latency, configured cost, and changed files. See
+[docs/evaluation.md](docs/evaluation.md).
+
+## Real-provider tests
+
+After chat/tool probes pass:
+
+```bash
+PAICLI_RUN_DASHSCOPE_LIVE_TEST=1 \
+python -m unittest tests.test_dashscope_live -v
+```
+
+For the optional A40 vLLM tunnel:
+
+```bash
+PAICLI_RUN_VLLM_LIVE_TEST=1 \
+python -m unittest tests.test_vllm_live -v
+```
+
+Never enable live tests in untrusted pull requests, because model-controlled
+code operations consume credentials and may create billable API calls.
+
+## Architecture and implementation record
+
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [SECURITY.md](SECURITY.md)
+- [docs/recovery.md](docs/recovery.md)
+- [docs/evaluation.md](docs/evaluation.md)
+- [docs/phase-09-dashscope-live.md](docs/phase-09-dashscope-live.md)
+- [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
+- [docs/java-parity.md](docs/java-parity.md)
+- [PHASES.md](PHASES.md)
+
+## Acceptance status
+
+The final release is gated by these checks:
+
+```text
+[x] one clean develop mainline
+[x] ReAct / Plan / Team execute from CLI
+[x] DashScope real chat, Tool Calling, ReAct, Plan, and Team tests pass
+[x] Planner generates and repairs a validated DAG
+[x] Workers read, modify, and deterministically verify code
+[x] Reviewer reads actual changed artifacts
+[x] Reviewer retries only the current task
+[x] HITL, diff, and command/file permission gates are active
+[x] failure snapshots and rollback work
+[x] interrupted task state can resume safely
+[x] model/tool calls have parent-child traces
+[x] Token, configured cost, latency, and errors are reported
+[x] fixed task reports compare baseline and candidate behavior
+[x] a fresh clone can reproduce installation, tests, and live probes
+```
+
+The release checklist is marked complete only after normal tests, real
+DashScope tests, the fixed suite, a clean `develop`, and fresh-install smoke
+checks all pass.

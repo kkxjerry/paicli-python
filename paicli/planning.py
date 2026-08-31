@@ -9,6 +9,7 @@ single graph model instead of maintaining separate DAG implementations.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import time
@@ -643,6 +644,7 @@ Rules:
 
 
 TaskExecutor = Callable[[Task, dict[str, str]], str]
+TaskLifecycleHook = Callable[[ExecutionPlan, Task], None]
 
 
 class PlanExecuteAgent:
@@ -654,10 +656,14 @@ class PlanExecuteAgent:
         executor: TaskExecutor,
         *,
         concurrency: TaskConcurrencyPolicy | None = None,
+        before_task: TaskLifecycleHook | None = None,
+        after_task: TaskLifecycleHook | None = None,
     ) -> None:
         self.planner = planner
         self.executor = executor
         self.concurrency = concurrency or TaskConcurrencyPolicy()
+        self.before_task = before_task or (lambda _plan, _task: None)
+        self.after_task = after_task or (lambda _plan, _task: None)
 
     def run(self, goal: str) -> ExecutionPlan:
         plan = self.planner.create_plan(goal)
@@ -681,7 +687,7 @@ class PlanExecuteAgent:
                 break
 
             for wave in self.concurrency.execution_waves(ready):
-                failures = self._execute_wave(wave, dict(results))
+                failures = self._execute_wave(plan, wave, dict(results))
                 for task in wave:
                     if task.status is TaskStatus.COMPLETED:
                         results[task.id] = task.result
@@ -712,10 +718,12 @@ class PlanExecuteAgent:
 
     def _execute_wave(
         self,
+        plan: ExecutionPlan,
         wave: list[Task],
         results: dict[str, str],
     ) -> list[Task]:
         for task in wave:
+            self.before_task(plan, task)
             task.mark_running()
 
         if len(wave) == 1:
@@ -733,7 +741,12 @@ class PlanExecuteAgent:
                 thread_name_prefix="paicli-plan-task",
             )
             futures = {
-                task.id: executor.submit(self.executor, task, dict(results))
+                task.id: executor.submit(
+                    contextvars.copy_context().run,
+                    self.executor,
+                    task,
+                    dict(results),
+                )
                 for task in wave
             }
             executions = []
@@ -755,6 +768,7 @@ class PlanExecuteAgent:
                 failures.append(task)
             else:
                 task.mark_completed(value or "")
+            self.after_task(plan, task)
         return failures
 
     @staticmethod
@@ -875,6 +889,7 @@ __all__ = [
     "StaticPlanner",
     "Task",
     "TaskExecutor",
+    "TaskLifecycleHook",
     "TaskConcurrencyPolicy",
     "TaskStatus",
     "TaskType",

@@ -1,14 +1,16 @@
-"""Phase 18：独立于 Git 历史的可恢复文件快照。
+"""Bounded file and whole-workspace snapshots outside the Git object store.
 
-在 Agent 改文件前记录 BEFORE 快照，出问题后可把文件恢复到当时的字节。
-快照保存在 .paicli/snapshots 或指定目录，不创建 Git commit，也不修改 Git 对象库。
-它只处理显式传入的文件，不是整个项目的完整备份。
+Explicit snapshots preserve the original learning API. Tree snapshots add a
+transaction boundary for complete Agent runs: files present at capture time are
+restored byte-for-byte and later-created files are removed, while generated
+state under ``.paicli`` and dependency/build directories is excluded.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -18,32 +20,39 @@ from typing import Iterable
 
 
 class SnapshotPhase(str, Enum):
-    """标记快照是一轮修改前还是修改后捕获。"""
-
     BEFORE = "before"
     AFTER = "after"
 
 
 @dataclass(frozen=True)
 class TurnSnapshot:
-    """快照元数据；files 的 value 是 Base64 文件内容或“当时不存在”。"""
-
     id: str
     phase: SnapshotPhase
     created_at: float
     files: dict[str, str | None]
+    tree: bool = False
 
 
 @dataclass(frozen=True)
 class RestoreResult:
-    """恢复过程中被写回和被删除的相对路径。"""
-
     restored: tuple[str, ...]
     removed: tuple[str, ...]
 
 
 class SnapshotService:
-    """在工作树的 Git 对象库之外保存文件字节。"""
+    """Persist bounded byte-accurate snapshots outside repository history."""
+
+    SYMLINK_PREFIX = "__PAICLI_SYMLINK__:"
+    DEFAULT_IGNORED_DIRECTORIES = {
+        ".git",
+        ".paicli",
+        ".venv",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+    }
 
     def __init__(
         self,
@@ -51,6 +60,9 @@ class SnapshotService:
         store: str | Path | None = None,
         *,
         max_file_bytes: int = 5_000_000,
+        max_total_bytes: int = 50_000_000,
+        max_files: int = 5_000,
+        ignored_directories: set[str] | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.store = (
@@ -58,84 +70,205 @@ class SnapshotService:
             if store
             else self.project_root / ".paicli" / "snapshots"
         )
+        if max_file_bytes < 1 or max_total_bytes < 1 or max_files < 1:
+            raise ValueError("snapshot limits must be positive")
         self.max_file_bytes = max_file_bytes
+        self.max_total_bytes = max_total_bytes
+        self.max_files = max_files
+        self.ignored_directories = (
+            set(ignored_directories)
+            if ignored_directories is not None
+            else set(self.DEFAULT_IGNORED_DIRECTORIES)
+        )
 
     def capture(
         self,
         paths: Iterable[str],
         phase: SnapshotPhase,
     ) -> TurnSnapshot:
-        """捕获指定路径的当前状态，并将一个 JSON 快照落盘。"""
+        """Capture explicitly named files, including their non-existence."""
 
         files: dict[str, str | None] = {}
+        total_bytes = 0
         for raw_path in paths:
-            path = self._safe_path(raw_path)
+            normalized = Path(raw_path).as_posix()
+            path = self._safe_path(normalized)
             if not path.exists():
-                # None 不是“忽略”，而是记住该文件在快照时尚未存在。
-                files[raw_path] = None
+                files[normalized] = None
                 continue
             if not path.is_file():
-                raise ValueError(f"snapshot path is not a file: {raw_path}")
-            # 按 bytes 读取，所以二进制文件和不同文本编码都可精确恢复。
-            data = path.read_bytes()
-            if len(data) > self.max_file_bytes:
-                raise ValueError(f"snapshot file is too large: {raw_path}")
-            # JSON 不能直接放 bytes，因此使用 Base64 编码成 ASCII 字符串。
-            files[raw_path] = base64.b64encode(data).decode("ascii")
+                raise ValueError(f"snapshot path is not a file: {normalized}")
+            data = self._read_bounded(path, normalized)
+            total_bytes += len(data)
+            self._check_total(total_bytes)
+            files[normalized] = base64.b64encode(data).decode("ascii")
 
         snapshot = TurnSnapshot(uuid.uuid4().hex, phase, time.time(), files)
-        self.store.mkdir(parents=True, exist_ok=True)
-        payload = asdict(snapshot)
-        # Enum 显式转成 before/after，避免 JSON 序列化失败。
-        payload["phase"] = phase.value
-        (self.store / f"{snapshot.id}.json").write_text(
-            json.dumps(payload, indent=2) + "\n",
-            encoding="utf-8",
+        self._persist(snapshot)
+        return snapshot
+
+    def capture_tree(self, phase: SnapshotPhase) -> TurnSnapshot:
+        """Capture every bounded project file not excluded by policy."""
+
+        files: dict[str, str | None] = {}
+        total_bytes = 0
+        for path in sorted(self.project_root.rglob("*")):
+            relative = path.relative_to(self.project_root)
+            if self._ignored(relative):
+                continue
+            if path.is_symlink():
+                resolved = path.resolve()
+                if not resolved.is_relative_to(self.project_root):
+                    raise ValueError(
+                        f"snapshot symbolic link escapes project root: {relative}"
+                    )
+                if len(files) >= self.max_files:
+                    raise ValueError(
+                        f"snapshot exceeds file limit ({self.max_files})"
+                    )
+                files[relative.as_posix()] = (
+                    self.SYMLINK_PREFIX + os.readlink(path)
+                )
+                continue
+            if not path.is_file():
+                continue
+            if len(files) >= self.max_files:
+                raise ValueError(
+                    f"snapshot exceeds file limit ({self.max_files})"
+                )
+            key = relative.as_posix()
+            data = self._read_bounded(path, key)
+            total_bytes += len(data)
+            self._check_total(total_bytes)
+            files[key] = base64.b64encode(data).decode("ascii")
+
+        snapshot = TurnSnapshot(
+            uuid.uuid4().hex,
+            phase,
+            time.time(),
+            files,
+            True,
         )
+        self._persist(snapshot)
         return snapshot
 
     def load(self, snapshot_id: str) -> TurnSnapshot:
-        """按 id 读取 JSON，并把 phase 还原为枚举。"""
-
         path = self.store / f"{snapshot_id}.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         return TurnSnapshot(
-            payload["id"],
+            str(payload["id"]),
             SnapshotPhase(payload["phase"]),
             float(payload["created_at"]),
             dict(payload["files"]),
+            bool(payload.get("tree", False)),
         )
 
     def restore(self, snapshot_id: str) -> RestoreResult:
-        """将工作树恢复到该快照所记录的文件状态。"""
+        """Restore an explicit snapshot; tree snapshots use tree semantics."""
 
         snapshot = self.load(snapshot_id)
+        if snapshot.tree:
+            return self._restore_tree_snapshot(snapshot)
         restored: list[str] = []
         removed: list[str] = []
         for raw_path, encoded in snapshot.files.items():
             path = self._safe_path(raw_path)
             if encoded is None:
-                # 快照时不存在、现在却存在：说明它是后续新建文件，需删除。
                 if path.is_file():
                     path.unlink()
                     removed.append(raw_path)
                 continue
-            # 原文件的父目录也可能被删，写回前先重建。
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(encoded))
             restored.append(raw_path)
         return RestoreResult(tuple(restored), tuple(removed))
 
-    def list_snapshots(self) -> list[TurnSnapshot]:
-        """按创建时间从旧到新列出快照。"""
+    def restore_tree(self, snapshot_id: str) -> RestoreResult:
+        snapshot = self.load(snapshot_id)
+        if not snapshot.tree:
+            raise ValueError("snapshot is not a project-tree snapshot")
+        return self._restore_tree_snapshot(snapshot)
 
+    def list_snapshots(self) -> list[TurnSnapshot]:
         if not self.store.is_dir():
             return []
         snapshots = [self.load(path.stem) for path in self.store.glob("*.json")]
         return sorted(snapshots, key=lambda item: item.created_at)
 
+    def _restore_tree_snapshot(self, snapshot: TurnSnapshot) -> RestoreResult:
+        expected = set(snapshot.files)
+        removed: list[str] = []
+        for path in sorted(self.project_root.rglob("*"), reverse=True):
+            if not path.is_file() and not path.is_symlink():
+                continue
+            relative = path.relative_to(self.project_root)
+            if self._ignored(relative):
+                continue
+            key = relative.as_posix()
+            if key not in expected:
+                path.unlink()
+                removed.append(key)
+
+        restored: list[str] = []
+        for raw_path, encoded in snapshot.files.items():
+            if encoded is None:
+                continue
+            path = self.project_root / raw_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if encoded.startswith(self.SYMLINK_PREFIX):
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+                os.symlink(encoded.removeprefix(self.SYMLINK_PREFIX), path)
+                restored.append(raw_path)
+                continue
+            safe_path = self._safe_path(raw_path)
+            if safe_path.is_symlink():
+                safe_path.unlink()
+            safe_path.write_bytes(base64.b64decode(encoded))
+            restored.append(raw_path)
+        self._remove_empty_directories()
+        return RestoreResult(tuple(restored), tuple(removed))
+
+    def _persist(self, snapshot: TurnSnapshot) -> None:
+        self.store.mkdir(parents=True, exist_ok=True)
+        payload = asdict(snapshot)
+        payload["phase"] = snapshot.phase.value
+        target = self.store / f"{snapshot.id}.json"
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+
+    def _read_bounded(self, path: Path, label: str) -> bytes:
+        data = path.read_bytes()
+        if len(data) > self.max_file_bytes:
+            raise ValueError(f"snapshot file is too large: {label}")
+        return data
+
+    def _check_total(self, total_bytes: int) -> None:
+        if total_bytes > self.max_total_bytes:
+            raise ValueError(
+                f"snapshot exceeds total byte limit ({self.max_total_bytes})"
+            )
+
+    def _ignored(self, relative: Path) -> bool:
+        return any(part in self.ignored_directories for part in relative.parts)
+
+    def _remove_empty_directories(self) -> None:
+        for path in sorted(self.project_root.rglob("*"), reverse=True):
+            if not path.is_dir() or path == self.project_root:
+                continue
+            relative = path.relative_to(self.project_root)
+            if self._ignored(relative):
+                continue
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+
     def _safe_path(self, raw_path: str) -> Path:
-        # 与 read_file/write_file 一样，拒绝 ../ 和符号链接绕出项目根目录。
         path = (self.project_root / raw_path).resolve()
         if not path.is_relative_to(self.project_root):
             raise ValueError("snapshot path escapes project root")

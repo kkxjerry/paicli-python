@@ -1,35 +1,53 @@
-"""模型层：将不同 Provider 统一为 Agent 可依赖的 ChatResponse。"""
+"""Provider-neutral LLM contracts and OpenAI-compatible HTTP clients.
+
+The module intentionally keeps the public surface small:
+
+- ``ChatResponse`` is the normalized response consumed by every Agent loop;
+- ``OpenAICompatibleClient`` owns the HTTP/protocol boundary;
+- ``RetryingLlmClient`` retries only failures explicitly classified transient;
+- ``LlmClientFactory`` maps provider-specific environment variables to the
+  same OpenAI-compatible client, including Alibaba Cloud DashScope.
+"""
 
 from __future__ import annotations
 
 import ipaddress
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 
 class LlmError(RuntimeError):
-    """模型 API 请求失败，或者响应无法解析。"""
+    """Model transport/protocol failure with deterministic retry metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(frozen=True)
 class ToolCall:
-    """模型请求 Agent 执行的一次工具调用。"""
+    """One model-requested function call."""
 
-    # id 用于把后续 tool 结果和本次调用对应起来。
     id: str
-    # name 必须能在 ToolRegistry 中找到。
     name: str
-    # 协议中 arguments 是 JSON 字符串，不是已解析的 dict。
     arguments: str
 
     def as_message_dict(self) -> dict[str, Any]:
-        """转成 assistant.tool_calls 需要的 OpenAI-compatible 字典结构。"""
-
         return {
             "id": self.id,
             "type": "function",
@@ -42,31 +60,27 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatResponse:
-    """Agent 真正需要的标准化模型响应与用量。"""
+    """Normalized model response plus provider-reported token usage."""
 
-    # 模型只调工具时，content 通常为空。
     content: str
-    # 一个回复可同时请求多个工具。
     tool_calls: tuple[ToolCall, ...] = ()
-    # OpenAI-compatible usage；Provider 不返回时保持 0。
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
 
 
 class LlmClient(Protocol):
-    """Agent 对模型的最小依赖，方便测试用 FakeClient 替换。"""
-
     def chat(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ChatResponse:
-        """根据消息历史和工具定义返回下一条 assistant 消息。"""
+        """Return the next assistant message."""
+        ...
 
 
 class OpenAICompatibleClient:
-    """调用兼容 OpenAI ``/chat/completions`` 协议的模型服务。"""
+    """Call a provider implementing the OpenAI chat-completions protocol."""
 
     def __init__(
         self,
@@ -75,20 +89,22 @@ class OpenAICompatibleClient:
         base_url: str,
         timeout_seconds: float = 120,
     ) -> None:
-        # 早失败：配置错误在真正网络请求前就暴露。
         if not api_key:
             raise ValueError("api_key cannot be empty")
         if not model:
             raise ValueError("model cannot be empty")
         if not base_url:
             raise ValueError("base_url cannot be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         self.api_key = api_key
         self.model = model
-        # 去掉末尾 /，后面拼接路径时不会出现双斜杠。
         self.base_url = base_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
-        # 本地 vLLM 常经过 SSH 隧道访问。如果机器设置了 HTTP_PROXY，
-        # urllib 可能把 127.0.0.1 也发给代理；回环地址应始终直连。
+        self.timeout_seconds = float(timeout_seconds)
+        self.provider = "custom"
+        self.context_window = 128_000
+        self.supports_prompt_caching = False
+        # SSH-tunnel traffic must not accidentally pass through a host proxy.
         self._loopback_opener = (
             urllib.request.build_opener(urllib.request.ProxyHandler({}))
             if _is_loopback_url(self.base_url)
@@ -97,159 +113,204 @@ class OpenAICompatibleClient:
 
     @classmethod
     def from_env(cls) -> OpenAICompatibleClient:
-        """从三个 PAICLI 环境变量创建通用客户端。"""
-
         api_key = os.getenv("PAICLI_API_KEY", "").strip()
         model = os.getenv("PAICLI_MODEL", "glm-4-flash").strip()
         base_url = os.getenv(
             "PAICLI_BASE_URL",
             "https://open.bigmodel.cn/api/paas/v4",
         ).strip()
+        timeout_raw = os.getenv("PAICLI_TIMEOUT_SECONDS", "120").strip()
         if not api_key:
             raise ValueError(
                 "PAICLI_API_KEY is missing; copy .env.example to .env first"
             )
-        return cls(api_key=api_key, model=model, base_url=base_url)
+        try:
+            timeout = float(timeout_raw)
+        except ValueError as exc:
+            raise ValueError("PAICLI_TIMEOUT_SECONDS must be a number") from exc
+        client = cls(api_key, model, base_url, timeout)
+        context_raw = os.getenv("PAICLI_CONTEXT_WINDOW", "128000").strip()
+        try:
+            client.context_window = max(8_000, int(context_raw))
+        except ValueError as exc:
+            raise ValueError("PAICLI_CONTEXT_WINDOW must be an integer") from exc
+        return client
 
     def chat(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> ChatResponse:
-        # messages 是完整消息链；tools 是可发给模型的 JSON Schema。
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
         }
         if tools:
-            # auto 让模型自己决定直接回答还是发起工具调用。
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        # ensure_ascii=False 保留中文，最后统一编码为 UTF-8 请求体。
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
-            data=body,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
-
         try:
-            # urllib 是标准库，学习项目无需引入第三方 HTTP 库。
-            open_request = (
+            opener = (
                 self._loopback_opener.open
                 if self._loopback_opener is not None
                 else urllib.request.urlopen
             )
-            with open_request(request, timeout=self.timeout_seconds) as response:
+            with opener(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            # HTTPError 仍可能携带服务端返回的详细错误正文。
             detail = exc.read().decode("utf-8", errors="replace")
-            raise LlmError(f"model API returned HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise LlmError(f"model API request failed: {exc.reason}") from exc
+            retryable = exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
+            raise LlmError(
+                f"model API returned HTTP {exc.code}: {detail}",
+                status_code=exc.code,
+                retryable=retryable,
+                retry_after_seconds=_retry_after_seconds(
+                    exc.headers.get("Retry-After")
+                ),
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise LlmError(
+                f"model API request failed: {reason}",
+                retryable=True,
+            ) from exc
+        except OSError as exc:
+            raise LlmError(
+                f"model API request failed: {exc}",
+                retryable=True,
+            ) from exc
 
         try:
-            # OpenAI-compatible 协议的核心消息位于 choices[0].message。
             root = json.loads(raw)
             message = root["choices"][0]["message"]
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-            raise LlmError(f"invalid model response: {raw[:500]}") from exc
-
-        # 从这一层出去后，Agent 不再需要理解供应商的原始 HTTP 字典。
-        calls = tuple(
-            ToolCall(
-                id=item["id"],
-                name=item["function"]["name"],
-                arguments=item["function"].get("arguments", "{}"),
+            raw_calls = message.get("tool_calls") or []
+            calls = tuple(
+                ToolCall(
+                    id=str(item["id"]),
+                    name=str(item["function"]["name"]),
+                    arguments=str(item["function"].get("arguments", "{}")),
+                )
+                for item in raw_calls
             )
-            for item in message.get("tool_calls") or []
-        )
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            raise LlmError(
+                f"invalid model response: {raw[:500]}",
+                retryable=False,
+            ) from exc
+
         usage = root.get("usage") or {}
-        input_tokens = _usage_int(usage, "prompt_tokens", "input_tokens")
-        output_tokens = _usage_int(usage, "completion_tokens", "output_tokens")
-        cached_input_tokens = _cached_input_tokens(usage)
         return ChatResponse(
-            content=message.get("content") or "",
+            content=_message_text(message.get("content")),
             tool_calls=calls,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_input_tokens=cached_input_tokens,
+            input_tokens=_usage_int(usage, "prompt_tokens", "input_tokens"),
+            output_tokens=_usage_int(
+                usage,
+                "completion_tokens",
+                "output_tokens",
+            ),
+            cached_input_tokens=_cached_input_tokens(usage),
         )
 
 
-def _usage_int(usage: object, *keys: str) -> int:
-    if not isinstance(usage, dict):
-        return 0
-    for key in keys:
-        value = usage.get(key)
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            continue
-    return 0
+class RetryingLlmClient:
+    """Retry only transient failures, with a deterministic bounded policy."""
+
+    def __init__(
+        self,
+        client: LlmClient,
+        *,
+        max_attempts: int = 3,
+        base_delay_seconds: float = 0.25,
+        max_delay_seconds: float = 4.0,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        if base_delay_seconds < 0 or max_delay_seconds < 0:
+            raise ValueError("retry delays cannot be negative")
+        if max_delay_seconds < base_delay_seconds:
+            raise ValueError("max retry delay cannot be smaller than base delay")
+        self.client = client
+        self.max_attempts = max_attempts
+        self.base_delay_seconds = base_delay_seconds
+        self.max_delay_seconds = max_delay_seconds
+        self.sleep = sleep
+        self.last_attempts = 0
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ChatResponse:
+        for attempt in range(1, self.max_attempts + 1):
+            self.last_attempts = attempt
+            try:
+                return self.client.chat(messages, tools)
+            except LlmError as exc:
+                if not exc.retryable or attempt >= self.max_attempts:
+                    raise
+                delay = (
+                    exc.retry_after_seconds
+                    if exc.retry_after_seconds is not None
+                    else min(
+                        self.max_delay_seconds,
+                        self.base_delay_seconds * (2 ** (attempt - 1)),
+                    )
+                )
+                if delay > 0:
+                    self.sleep(delay)
+        raise AssertionError("retry loop exhausted without returning or raising")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
 
 
-def _cached_input_tokens(usage: object) -> int:
-    if not isinstance(usage, dict):
-        return 0
-    direct = _usage_int(
-        usage,
-        "cached_tokens",
-        "cached_input_tokens",
-        "prompt_cache_hit_tokens",
-        "input_cache_hit_tokens",
-    )
-    if direct:
-        return direct
-    for key in ("prompt_tokens_details", "input_tokens_details"):
-        details = usage.get(key)
-        cached = _usage_int(details, "cached_tokens", "cached_input_tokens")
-        if cached:
-            return cached
-    return 0
+def unwrap_llm_client(client: LlmClient) -> LlmClient:
+    """Return the innermost provider behind transparent client decorators."""
 
-
-def _is_loopback_url(url: str) -> bool:
-    """判断 API 地址是否指向本机，用于避免 SSH 隧道被代理劫持。"""
-
-    host = (urllib.parse.urlsplit(url).hostname or "").lower()
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        # 普通域名仍按用户的 HTTP(S)_PROXY 配置访问。
-        return False
+    current: Any = client
+    seen: set[int] = set()
+    while hasattr(current, "client") and id(current) not in seen:
+        seen.add(id(current))
+        candidate = getattr(current, "client")
+        if candidate is current:
+            break
+        current = candidate
+    return current
 
 
 @dataclass(frozen=True)
 class ProviderConfig:
-    """一个模型服务商的默认连接信息和能力元数据。"""
-
     name: str
     api_key_env: str
     default_model: str
     default_base_url: str
     context_window: int
     supports_prompt_caching: bool = False
-    # 云端 API 必须有密钥；vLLM 内网服务可以不启用鉴权。
     requires_api_key: bool = True
 
 
 class LlmClientFactory:
-    """Phase 8：根据 provider 名称创建 OpenAI-compatible 客户端。
+    """Create configured OpenAI-compatible clients without network I/O."""
 
-    工厂屏蔽不同服务商的 API Key 环境变量、默认模型和 base URL。
-    它们仍必须提供兼容 OpenAI chat/completions 的 HTTP 接口。
-    """
-
-    PROVIDERS = {
+    PROVIDERS: Mapping[str, ProviderConfig] = {
+        "dashscope": ProviderConfig(
+            "dashscope",
+            "DASHSCOPE_API_KEY",
+            "qwen-plus",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            131_072,
+            True,
+        ),
         "glm": ProviderConfig(
             "glm",
             "GLM_API_KEY",
@@ -298,20 +359,16 @@ class LlmClientFactory:
         *,
         environ: Mapping[str, str] | None = None,
     ) -> OpenAICompatibleClient:
-        # 测试可传入独立 environ，避免修改进程的真实 os.environ。
         environment = os.environ if environ is None else environ
-        # 允许用户输入大小写混合和前后空格。
         name = provider.strip().lower()
         if name not in cls.PROVIDERS:
             supported = ", ".join(sorted(cls.PROVIDERS))
             raise ValueError(f"unknown provider {provider!r}; choose: {supported}")
         config = cls.PROVIDERS[name]
-        # provider=deepseek 对应可选覆盖变量 DEEPSEEK_MODEL/DEEPSEEK_BASE_URL。
         prefix = name.upper()
         api_key = environment.get(config.api_key_env, "").strip()
         if config.requires_api_key and not api_key:
             raise ValueError(f"{config.api_key_env} is missing")
-        # vLLM 未启用 --api-key 时也接受这个占位值；它不是真实密钥。
         api_key = api_key or "EMPTY"
         model = environment.get(f"{prefix}_MODEL", config.default_model).strip()
         base_url = environment.get(
@@ -322,13 +379,120 @@ class LlmClientFactory:
             raise ValueError(f"{prefix}_MODEL is missing")
         if not base_url:
             raise ValueError(f"{prefix}_BASE_URL is missing")
+
+        timeout_raw = environment.get(f"{prefix}_TIMEOUT_SECONDS", "120").strip()
+        try:
+            timeout_seconds = float(timeout_raw)
+        except ValueError as exc:
+            raise ValueError(f"{prefix}_TIMEOUT_SECONDS must be a number") from exc
+        if timeout_seconds <= 0:
+            raise ValueError(f"{prefix}_TIMEOUT_SECONDS must be positive")
+
+        context_raw = environment.get(
+            f"{prefix}_CONTEXT_WINDOW",
+            str(config.context_window),
+        ).strip()
+        try:
+            context_window = int(context_raw)
+        except ValueError as exc:
+            raise ValueError(f"{prefix}_CONTEXT_WINDOW must be an integer") from exc
+        if context_window < 8_000:
+            raise ValueError(f"{prefix}_CONTEXT_WINDOW must be at least 8000")
+
         client = OpenAICompatibleClient(
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
+            api_key,
+            model,
+            base_url,
+            timeout_seconds,
         )
-        # 这些元数据不影响 HTTP 调用，但后续 ContextManager 可据此选择上下文策略。
         client.provider = config.name
-        client.context_window = config.context_window
+        client.context_window = context_window
         client.supports_prompt_caching = config.supports_prompt_caching
         return client
+
+
+def _message_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") in {
+                "text",
+                "output_text",
+            }:
+                text = item.get("text", "")
+                if isinstance(text, dict):
+                    text = text.get("value", "")
+                parts.append(str(text))
+        return "".join(parts)
+    return str(value)
+
+
+def _retry_after_seconds(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(str(value).strip()))
+    except ValueError:
+        return None
+
+
+def _usage_int(usage: object, *keys: str) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in keys:
+        value = usage.get(key)
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _cached_input_tokens(usage: object) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    direct = _usage_int(
+        usage,
+        "cached_tokens",
+        "cached_input_tokens",
+        "prompt_cache_hit_tokens",
+        "input_cache_hit_tokens",
+    )
+    if direct:
+        return direct
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        cached = _usage_int(
+            usage.get(key),
+            "cached_tokens",
+            "cached_input_tokens",
+        )
+        if cached:
+            return cached
+    return 0
+
+
+def _is_loopback_url(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+__all__ = [
+    "ChatResponse",
+    "LlmClient",
+    "LlmClientFactory",
+    "LlmError",
+    "OpenAICompatibleClient",
+    "ProviderConfig",
+    "RetryingLlmClient",
+    "ToolCall",
+    "unwrap_llm_client",
+]

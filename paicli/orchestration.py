@@ -8,6 +8,7 @@ explicit plan-level resource declarations are available.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,12 @@ from typing import Callable, Mapping, Protocol
 from .agents.models import AgentOutcome
 from .context import TokenUsage
 from .llm_client import LlmClient
+from .observability import (
+    TraceStore,
+    current_trace_context,
+    trace_scope,
+    traced_span,
+)
 from .planning import (
     DagScheduler,
     ExecutionPlan,
@@ -70,6 +77,41 @@ PlanReviewHandler = Callable[
     PlanReviewDecision | bool,
 ]
 PlanApproval = PlanReviewHandler
+
+
+class OrchestrationObserver(Protocol):
+    """Persistence/snapshot hooks that do not participate in task decisions."""
+
+    def plan_ready(
+        self,
+        mode: str,
+        plan: ExecutionPlan,
+        records: Mapping[str, "TaskRunRecord"],
+    ) -> None: ...
+
+    def before_task(
+        self,
+        mode: str,
+        plan: ExecutionPlan,
+        task: Task,
+        records: Mapping[str, "TaskRunRecord"],
+    ) -> None: ...
+
+    def review_finished(
+        self,
+        mode: str,
+        plan: ExecutionPlan,
+        task: Task,
+        records: Mapping[str, "TaskRunRecord"],
+    ) -> None: ...
+
+    def after_task(
+        self,
+        mode: str,
+        plan: ExecutionPlan,
+        task: Task,
+        records: Mapping[str, "TaskRunRecord"],
+    ) -> None: ...
 
 
 class OrchestrationMode(str, Enum):
@@ -256,11 +298,13 @@ class _PlanWorkerExecutor:
         factory: SubAgentFactory,
         records: dict[str, TaskRunRecord],
         on_event: EventHandler,
+        run_id: str = "",
     ) -> None:
         self.plan = plan
         self.factory = factory
         self.records = records
         self.on_event = on_event
+        self.run_id = run_id
         self._lock = threading.Lock()
 
     def set_plan(self, plan: ExecutionPlan) -> None:
@@ -286,6 +330,7 @@ class _PlanWorkerExecutor:
             completed_results,
             changed_files=changed_by_task,
             attempt=task.execution_attempts,
+            run_id=self.run_id,
         )
         self.on_event("task", f"{task.id} started with {worker.scope.value} tools")
         outcome = worker.run_task(packet)
@@ -308,6 +353,7 @@ class PlanModeRuntime:
         max_plan_revisions: int = 2,
         aggregator: ResultAggregator | None = None,
         on_event: EventHandler | None = None,
+        trace_store: TraceStore | None = None,
     ) -> None:
         if max_plan_revisions < 0:
             raise ValueError("max_plan_revisions cannot be negative")
@@ -317,6 +363,7 @@ class PlanModeRuntime:
         self.max_plan_revisions = max_plan_revisions
         self.aggregator = aggregator or LlmResultAggregator(factory)
         self.on_event = on_event or (lambda _kind, _text: None)
+        self.trace_store = trace_store
 
     def set_client(self, client: LlmClient) -> None:
         if hasattr(self.planner, "client"):
@@ -328,8 +375,18 @@ class PlanModeRuntime:
         goal: str,
         *,
         approval: PlanApproval | None = None,
+        observer: OrchestrationObserver | None = None,
     ) -> OrchestrationResult:
-        plan = self.planner.create_plan(goal)
+        trace = current_trace_context()
+        with traced_span(
+            self.trace_store,
+            "agent",
+            "planner",
+            run_id=trace.run_id,
+            agent_role="planner",
+            agent_name="planner",
+        ):
+            plan = self.planner.create_plan(goal)
         PlanValidator(require_tasks=True).validate(plan)
         revisions = 0
         while True:
@@ -381,16 +438,71 @@ class PlanModeRuntime:
             revisions += 1
 
         records: dict[str, TaskRunRecord] = {}
+        _notify_observer(
+            observer,
+            "plan_ready",
+            OrchestrationMode.PLAN.value,
+            plan,
+            records,
+        )
+        return self.execute_plan(
+            plan,
+            records=records,
+            observer=observer,
+            planner_usage=_planner_usage(self.planner),
+        )
+
+    def resume(
+        self,
+        plan: ExecutionPlan,
+        *,
+        records: Mapping[str, TaskRunRecord] | None = None,
+        observer: OrchestrationObserver | None = None,
+    ) -> OrchestrationResult:
+        PlanValidator(require_tasks=True).validate(plan)
+        return self.execute_plan(
+            plan,
+            records=dict(records or {}),
+            observer=observer,
+            planner_usage=TokenUsage(0, 0, 0),
+        )
+
+    def execute_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        records: dict[str, TaskRunRecord],
+        observer: OrchestrationObserver | None,
+        planner_usage: TokenUsage,
+    ) -> OrchestrationResult:
+        trace = current_trace_context()
         worker_executor = _PlanWorkerExecutor(
             plan,
             self.factory,
             records,
             self.on_event,
+            trace.run_id,
         )
         executor = PlanExecuteAgent(
             self.planner,
             worker_executor,
             concurrency=self.concurrency,
+            before_task=lambda current, task: _notify_observer(
+                observer,
+                "before_task",
+                OrchestrationMode.PLAN.value,
+                current,
+                task,
+                records,
+            ),
+            after_task=lambda current, task: _notify_observer(
+                observer,
+                "after_task",
+                OrchestrationMode.PLAN.value,
+                current,
+                task,
+                records,
+            ),
         )
         completed_plan = executor.execute(plan)
         aggregation = self.aggregator.aggregate(
@@ -404,7 +516,7 @@ class PlanModeRuntime:
             completed_plan,
             aggregation.answer,
             dict(records),
-            _planner_usage(self.planner),
+            planner_usage,
             aggregation.outcome,
         )
 
@@ -422,6 +534,7 @@ class TeamModeRuntime:
         review_repair_attempts: int = 1,
         aggregator: ResultAggregator | None = None,
         on_event: EventHandler | None = None,
+        trace_store: TraceStore | None = None,
     ) -> None:
         if max_review_retries < 0:
             raise ValueError("max_review_retries cannot be negative")
@@ -432,18 +545,78 @@ class TeamModeRuntime:
         self.review_repair_attempts = review_repair_attempts
         self.aggregator = aggregator or LlmResultAggregator(factory)
         self.on_event = on_event or (lambda _kind, _text: None)
+        self.trace_store = trace_store
 
     def set_client(self, client: LlmClient) -> None:
         if hasattr(self.planner, "client"):
             setattr(self.planner, "client", client)
         self.factory.set_client(client)
 
-    def run(self, goal: str) -> OrchestrationResult:
-        plan = self.planner.create_plan(goal)
+    def run(
+        self,
+        goal: str,
+        *,
+        observer: OrchestrationObserver | None = None,
+    ) -> OrchestrationResult:
+        trace = current_trace_context()
+        with traced_span(
+            self.trace_store,
+            "agent",
+            "planner",
+            run_id=trace.run_id,
+            agent_role="planner",
+            agent_name="planner",
+        ):
+            plan = self.planner.create_plan(goal)
         PlanValidator(require_tasks=True).validate(plan)
         self.on_event("plan", plan.render())
         records: dict[str, TaskRunRecord] = {}
+        _notify_observer(
+            observer,
+            "plan_ready",
+            OrchestrationMode.TEAM.value,
+            plan,
+            records,
+        )
+        return self.execute_plan(
+            plan,
+            records=records,
+            observer=observer,
+            planner_usage=_planner_usage(self.planner),
+        )
 
+    def resume(
+        self,
+        plan: ExecutionPlan,
+        *,
+        records: Mapping[str, TaskRunRecord] | None = None,
+        observer: OrchestrationObserver | None = None,
+    ) -> OrchestrationResult:
+        PlanValidator(require_tasks=True).validate(plan)
+        restored_records = dict(records or {})
+        _notify_observer(
+            observer,
+            "plan_ready",
+            OrchestrationMode.TEAM.value,
+            plan,
+            restored_records,
+        )
+        return self.execute_plan(
+            plan,
+            records=restored_records,
+            observer=observer,
+            planner_usage=TokenUsage(0, 0, 0),
+        )
+
+    def execute_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        records: dict[str, TaskRunRecord],
+        observer: OrchestrationObserver | None,
+        planner_usage: TokenUsage,
+    ) -> OrchestrationResult:
+        trace = current_trace_context()
         while not plan.is_finished():
             ready = plan.ready_tasks()
             if not ready:
@@ -467,6 +640,8 @@ class TeamModeRuntime:
                     completed_snapshot,
                     changed_snapshot,
                     records,
+                    trace.run_id,
+                    observer,
                 )
                 DagScheduler.mark_blocked(plan)
                 completed_snapshot = plan.completed_results()
@@ -486,7 +661,7 @@ class TeamModeRuntime:
             plan,
             aggregation.answer,
             dict(records),
-            _planner_usage(self.planner),
+            planner_usage,
             aggregation.outcome,
         )
 
@@ -497,6 +672,8 @@ class TeamModeRuntime:
         completed_results: Mapping[str, str],
         changed_files: Mapping[str, tuple[str, ...]],
         records: dict[str, TaskRunRecord],
+        run_id: str,
+        observer: OrchestrationObserver | None,
     ) -> None:
         if len(wave) == 1:
             task = wave[0]
@@ -505,6 +682,8 @@ class TeamModeRuntime:
                 task,
                 completed_results,
                 changed_files,
+                run_id,
+                observer,
             )
             return
 
@@ -514,11 +693,14 @@ class TeamModeRuntime:
         )
         futures = {
             task.id: executor.submit(
+                contextvars.copy_context().run,
                 self._execute_task,
                 plan,
                 task,
                 dict(completed_results),
                 dict(changed_files),
+                run_id,
+                observer,
             )
             for task in wave
         }
@@ -542,6 +724,8 @@ class TeamModeRuntime:
         task: Task,
         completed_results: Mapping[str, str],
         changed_files: Mapping[str, tuple[str, ...]],
+        run_id: str,
+        observer: OrchestrationObserver | None,
     ) -> TaskRunRecord:
         worker = self.factory.create_worker(task, name=f"worker-{task.id}")
         reviewer = ReviewerAgent(
@@ -551,7 +735,26 @@ class TeamModeRuntime:
         record = TaskRunRecord(task.id, worker.name, worker.scope)
         feedback: tuple[str, ...] = ()
 
+        def finish() -> TaskRunRecord:
+            _notify_observer(
+                observer,
+                "after_task",
+                OrchestrationMode.TEAM.value,
+                plan,
+                task,
+                {task.id: record},
+            )
+            return record
+
         for retry_index in range(self.max_review_retries + 1):
+            _notify_observer(
+                observer,
+                "before_task",
+                OrchestrationMode.TEAM.value,
+                plan,
+                task,
+                {task.id: record},
+            )
             task.mark_running()
             packet = TaskPacket.from_task(
                 plan,
@@ -560,6 +763,7 @@ class TeamModeRuntime:
                 changed_files=changed_files,
                 attempt=task.execution_attempts,
                 review_feedback=feedback,
+                run_id=run_id,
             )
             self.on_event(
                 "task",
@@ -572,7 +776,7 @@ class TeamModeRuntime:
                     outcome.error
                     or f"worker stopped with {outcome.finish_reason.value}"
                 )
-                return record
+                return finish()
 
             review_run = reviewer.review(packet, outcome)
             record.reviews.append(review_run)
@@ -582,27 +786,51 @@ class TeamModeRuntime:
                 "review",
                 f"{task.id}: {review.verdict.value} — {review.summary}",
             )
+            _notify_observer(
+                observer,
+                "review_finished",
+                OrchestrationMode.TEAM.value,
+                plan,
+                task,
+                {task.id: record},
+            )
 
             if review.verdict is ReviewVerdict.APPROVED:
                 task.mark_completed(outcome.content)
-                return record
+                return finish()
             if review.verdict is ReviewVerdict.ERROR:
                 task.mark_failed("reviewer error: " + (review.error or review.summary))
-                return record
-            if review.verdict is ReviewVerdict.REJECTED:
+                return finish()
+            # The reviewer explicitly declares whether the same worker can
+            # repair the current task. Non-retryable rejection is a plan-level
+            # or safety failure and must not be converted into an endless local
+            # edit loop.
+            if not review.retryable:
                 task.mark_failed("review rejected task: " + review.feedback())
-                return record
+                return finish()
             if retry_index >= self.max_review_retries:
                 task.mark_failed(
                     "review changes were not resolved after "
                     f"{self.max_review_retries} local retry attempt(s): "
                     + review.feedback()
                 )
-                return record
+                return finish()
             feedback = (review.feedback(),)
 
         task.mark_failed("review loop ended without a verdict")
-        return record
+        return finish()
+
+
+def _notify_observer(
+    observer: OrchestrationObserver | None,
+    method: str,
+    *arguments: object,
+) -> None:
+    if observer is None:
+        return
+    callback = getattr(observer, method, None)
+    if callable(callback):
+        callback(*arguments)
 
 
 def _status_for_plan(plan: ExecutionPlan) -> OrchestrationStatus:
@@ -641,6 +869,7 @@ __all__ = [
     "DeterministicResultAggregator",
     "LlmResultAggregator",
     "OrchestrationMode",
+    "OrchestrationObserver",
     "PlanReviewAction",
     "PlanReviewDecision",
     "PlanReviewHandler",

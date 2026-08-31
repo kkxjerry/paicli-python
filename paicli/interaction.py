@@ -32,8 +32,11 @@ class CliCommandParser:
         "history",
         "model",
         "plan",
+        "resume",
+        "runs",
         "team",
         "tools",
+        "trace",
     }
 
     @classmethod

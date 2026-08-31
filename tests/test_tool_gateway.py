@@ -233,11 +233,11 @@ class ToolGatewayTest(unittest.TestCase):
                     "long_deadline_read",
                     "Keeps result collection busy while another call expires.",
                     registry.object_schema({}),
-                    lambda _args: time.sleep(0.05) or "read complete",
+                    lambda _args: time.sleep(0.1) or "read complete",
                     risk=ToolRisk.SAFE,
                     side_effect=ToolSideEffect.READ_ONLY,
                     concurrency=ConcurrencyPolicy.PARALLEL,
-                    timeout_seconds=0.2,
+                    timeout_seconds=1.0,
                 )
             )
             registry.register(
@@ -247,11 +247,11 @@ class ToolGatewayTest(unittest.TestCase):
                     registry.object_schema(
                         {"path": {"type": "string"}}, required=["path"]
                     ),
-                    lambda _args: time.sleep(0.03) or "write complete",
+                    lambda _args: time.sleep(0.04) or "write complete",
                     risk=ToolRisk.MEDIUM,
                     side_effect=ToolSideEffect.FILE_WRITE,
                     concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
-                    timeout_seconds=0.01,
+                    timeout_seconds=0.02,
                     resource_resolver=lambda args: (
                         ResourceAccess(str(args["path"]), ResourceMode.WRITE),
                     ),

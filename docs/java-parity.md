@@ -1,6 +1,6 @@
 # Java → Python behavior parity ledger
 
-This file is the Phase 0–8 source of truth for porting PaiCLI behavior. The goal
+This file is the Phase 0–15 source of truth for porting PaiCLI behavior. The goal
 is **behavioral parity at public boundaries**, not line-by-line Java
 translation.  Intentional Python improvements are recorded explicitly so a
 future change cannot silently reintroduce a Java limitation.
@@ -119,3 +119,24 @@ The following remain separate phases and must not be advertised as completed:
 - Worker concurrency is intentionally limited to `FILE_READ` and `ANALYSIS`
   tasks whose runtime tool scope is read-only. Safe parallel code mutation needs
   worktree or equivalent workspace isolation.
+
+
+## Phase 9–15 completion matrix
+
+| Capability | Java/reference behavior | Python final result | Decision |
+|---|---|---|---|
+| Real provider | OpenAI-compatible providers | Native DashScope plus real chat/tool/ReAct/Plan/Team gates | Complete |
+| Side-effect approval | Java HITL exists but may be disabled | Production CLI always inserts explicit ask/deny/allow HITL with diff/command preview | Safer default |
+| Reviewer failure | Some Java paths may retain result | Error, rejection, or retry exhaustion fails current Task | Deliberate improvement |
+| Run transaction | Side-Git turn snapshots | Run/task snapshots, rollback policy and durable checkpoint pairing | Extend |
+| Crash recovery | Whole prompt may be re-enqueued | Restore uncertain Task snapshot or restart full DAG when idempotency is unknown | Improve safety |
+| Trace | logs/usage/audit are separate | One run/span/model/tool SQLite trace with parent IDs and redaction | Unify |
+| Parent budget | Per-Agent limits | Aggregate tokens/cost/time/model/tool-call limits across all roles and retries | Extend |
+| Evaluation | framework tests | Fixed real-model suite, deterministic assertions and Git revision comparison | Add evidence |
+| Code RAG | embedding + SQLite hybrid | persistent symbol + FTS5/BM25 + lexical + optional dense RRF, with source spans | Behavioral parity with dependency-free fallback |
+| Memory | durable memory | IDs, provenance, verification, stale/delete lifecycle and legacy JSONL compatibility | Improve trust |
+| Release | Java application | installable Python 1.0.0, CI, security/recovery/evaluation docs | Complete |
+
+## Explicit final scope boundaries
+
+The final Python release does not claim an OS shell sandbox, distributed multi-host scheduling, exactly-once arbitrary remote side effects, safe parallel code mutation without per-worker worktrees, or human-calibrated Reviewer accuracy. These are explicit architectural boundaries documented in `SECURITY.md`; they are not silently represented as completed features.

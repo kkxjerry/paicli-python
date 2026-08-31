@@ -19,3 +19,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+reports/*.tmp
+eval-workspaces/
+*.db-wal
+*.db-shm

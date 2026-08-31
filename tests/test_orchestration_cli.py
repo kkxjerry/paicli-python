@@ -24,7 +24,7 @@ from paicli.orchestration import (
     OrchestrationResult,
     OrchestrationStatus,
 )
-from paicli.planning import ExecutionPlan, Task, TaskStatus
+from paicli.planning import ExecutionPlan, Task, TaskStatus, TaskType
 
 
 class NoCallClient:
@@ -198,6 +198,32 @@ class OrchestrationCliTest(unittest.TestCase):
         self.assertEqual(0, orchestration_exit_code(cancelled))
         self.assertEqual(TaskStatus.FAILED, partial.plan.task("b").status)
 
+    def test_application_runtime_applies_hitl_to_react_and_subagents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = build_application_runtime(
+                NoCallClient(),
+                directory,
+                enable_memory=False,
+                approval_mode="deny",
+            )
+
+            react_result = runtime.react.agent.tools.execute_result(
+                "write_file",
+                '{"path":"react.txt","content":"blocked"}',
+            )
+            worker = runtime.subagents.create_worker(
+                Task("write", "Write", task_type=TaskType.FILE_WRITE)
+            )
+            worker_result = worker.agent.tools.execute_result(
+                "write_file",
+                '{"path":"worker.txt","content":"blocked"}',
+            )
+
+            self.assertFalse(react_result.ok)
+            self.assertFalse(worker_result.ok)
+            self.assertFalse(Path(directory, "react.txt").exists())
+            self.assertFalse(Path(directory, "worker.txt").exists())
+
     def test_application_runtime_wires_all_modes_and_switches_shared_client(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first = NoCallClient()
@@ -215,10 +241,12 @@ class OrchestrationCliTest(unittest.TestCase):
             second.model = "second"  # type: ignore[misc]
             runtime.set_client(second)
 
-            self.assertIs(second, runtime.react.agent.client)
-            self.assertIs(second, runtime.subagents.client)
-            self.assertIs(second, runtime.plan.planner.client)
-            self.assertIs(second, runtime.team.planner.client)
+            # Trace-enabled runtimes preserve the observed wrapper while
+            # replacing its underlying provider client.
+            self.assertIs(second, runtime.client)
+            self.assertIs(runtime.react.agent.client, runtime.subagents.client)
+            self.assertIs(runtime.react.agent.client, runtime.plan.planner.client)
+            self.assertIs(runtime.react.agent.client, runtime.team.planner.client)
             self.assertEqual(3, runtime.plan.concurrency.max_workers)
             self.assertEqual(1, runtime.plan.max_plan_revisions)
             self.assertEqual(2, runtime.team.concurrency.max_workers)

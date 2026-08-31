@@ -692,6 +692,7 @@ class OrchestrationTest(unittest.TestCase):
                 LlmPlanner(client),
                 factory,
                 max_workers=2,
+                max_review_retries=0,
                 aggregator=DeterministicResultAggregator(),
             )
 

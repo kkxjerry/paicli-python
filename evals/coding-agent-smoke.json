@@ -1,0 +1,64 @@
+{
+  "name": "coding-agent-smoke",
+  "version": 1,
+  "description": "Fixed real-model tasks for ReAct, Plan, and Team behavior.",
+  "cases": [
+    {
+      "id": "react_read_marker",
+      "mode": "react",
+      "prompt": "You must call read_file on probe.txt and then answer with the exact marker from the file.",
+      "files": {
+        "probe.txt": "PAICLI_EVAL_MARKER_8421\n"
+      },
+      "expected_files": [
+        {
+          "path": "probe.txt",
+          "contains": ["PAICLI_EVAL_MARKER_8421"]
+        }
+      ],
+      "test_command": [
+        "python3",
+        "-c",
+        "from pathlib import Path; assert Path('probe.txt').read_text() == 'PAICLI_EVAL_MARKER_8421\\n'"
+      ]
+    },
+    {
+      "id": "plan_add_subtract",
+      "mode": "plan",
+      "prompt": "Inspect calculator.py, add subtract(left: int, right: int) returning left - right, create test_calculator.py with unittest coverage for add and subtract, and run python3 -m unittest -q. Use separate read, write, and verification tasks with correct dependencies.",
+      "files": {
+        "calculator.py": "def add(left: int, right: int) -> int:\n    return left + right\n"
+      },
+      "expected_files": [
+        {
+          "path": "calculator.py",
+          "contains": ["def subtract", "left - right"]
+        },
+        {
+          "path": "test_calculator.py",
+          "contains": ["subtract"]
+        }
+      ],
+      "test_command": ["python3", "-m", "unittest", "-q"],
+      "test_timeout_seconds": 30
+    },
+    {
+      "id": "team_fix_multiply",
+      "mode": "team",
+      "prompt": "Inspect calculator.py and test_calculator.py, fix multiply so it returns the product, run python3 -m unittest -q, and independently review the actual changed artifact before approving.",
+      "files": {
+        "calculator.py": "def multiply(left: int, right: int) -> int:\n    return left + right\n",
+        "test_calculator.py": "import unittest\n\nfrom calculator import multiply\n\n\nclass CalculatorTest(unittest.TestCase):\n    def test_multiply(self) -> None:\n        self.assertEqual(42, multiply(6, 7))\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+      },
+      "expected_files": [
+        {
+          "path": "calculator.py",
+          "contains": ["def multiply", "left * right"],
+          "not_contains": ["return left + right"]
+        }
+      ],
+      "test_command": ["python3", "-m", "unittest", "-q"],
+      "test_timeout_seconds": 30
+    }
+  ]
+}

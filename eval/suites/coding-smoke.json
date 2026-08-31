@@ -1,0 +1,77 @@
+{
+  "name": "paicli-coding-smoke",
+  "version": "1.0",
+  "tasks": [
+    {
+      "id": "react-read-marker",
+      "mode": "react",
+      "prompt": "You must call read_file on marker.txt. After receiving the tool result, answer with the exact marker and no invented value.",
+      "files": {
+        "marker.txt": "PAICLI_FIXED_EVAL_MARKER_2026"
+      },
+      "assertions": [
+        {
+          "kind": "answer_contains",
+          "value": "PAICLI_FIXED_EVAL_MARKER_2026"
+        }
+      ],
+      "max_run_seconds": 90
+    },
+    {
+      "id": "plan-add-subtract",
+      "mode": "plan",
+      "prompt": "Inspect calculator.py and test_calculator.py. Add a subtract(a, b) function, add a deterministic unittest for it, and run the complete unittest suite. Do not claim completion until the test command exits successfully.",
+      "files": {
+        "calculator.py": "def add(a: int, b: int) -> int:\n    return a + b\n",
+        "test_calculator.py": "import unittest\n\nfrom calculator import add\n\n\nclass CalculatorTest(unittest.TestCase):\n    def test_add(self) -> None:\n        self.assertEqual(5, add(2, 3))\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+      },
+      "assertions": [
+        {
+          "kind": "file_contains",
+          "path": "calculator.py",
+          "value": "def subtract"
+        },
+        {
+          "kind": "file_contains",
+          "path": "test_calculator.py",
+          "value": "subtract"
+        },
+        {
+          "kind": "command",
+          "command": ["python3", "-m", "unittest", "-q"],
+          "exit_code": 0,
+          "timeout_seconds": 30
+        }
+      ],
+      "max_run_seconds": 240
+    },
+    {
+      "id": "team-fix-division",
+      "mode": "team",
+      "prompt": "Inspect calculator.py and test_calculator.py. Fix divide(a, b) so division by zero raises ValueError with a clear message. Add or update deterministic unittests for normal division and the zero-divisor case, run the complete unittest suite, and have the reviewer inspect the actual changed files before approval.",
+      "files": {
+        "calculator.py": "def divide(a: float, b: float) -> float:\n    return a / b\n",
+        "test_calculator.py": "import unittest\n\nfrom calculator import divide\n\n\nclass CalculatorTest(unittest.TestCase):\n    def test_divide(self) -> None:\n        self.assertEqual(2.0, divide(6.0, 3.0))\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+      },
+      "assertions": [
+        {
+          "kind": "file_contains",
+          "path": "calculator.py",
+          "value": "ValueError"
+        },
+        {
+          "kind": "file_contains",
+          "path": "test_calculator.py",
+          "value": "assertRaises"
+        },
+        {
+          "kind": "command",
+          "command": ["python3", "-m", "unittest", "-q"],
+          "exit_code": 0,
+          "timeout_seconds": 30
+        }
+      ],
+      "max_run_seconds": 300
+    }
+  ]
+}

@@ -1,33 +1,33 @@
-"""PaiCLI command-line assembly for ReAct, Plan, and Team modes."""
+"""PaiCLI command-line entry point over one coordinated execution path."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+from typing import Callable
 
 from .agent import Agent, AgentLoopError
 from .agents.budget import AgentBudget
 from .bootstrap import ApplicationRuntime, build_application_runtime
+from .execution import CoordinatedRun, RunCoordinator
 from .images import ImageAttachment, ImageProcessor
 from .interaction import CliCommand, CliCommandParser, PaiCliHistory, normalize_input
 from .llm_client import LlmClientFactory, LlmError, OpenAICompatibleClient
 from .model_probe import ProbeMode, probe_model
-from .orchestration import (
-    OrchestrationResult,
-    OrchestrationStatus,
-    PlanReviewDecision,
-    PlanReviewHandler,
-)
-from .planning import ExecutionPlan, PlanGenerationError
+from .observability import RunLimits
+from .orchestration import OrchestrationStatus, PlanApproval
+from .planning import ExecutionPlan, PlanReviewDecision
+from .policy import ApprovalMode
 from .rendering import StatusInfo, create_renderer
 from .runtime import CancelledError
-
-PlanApproval = PlanReviewHandler
+from .safety import RollbackPolicy
+from .state import RunStateStore
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
-    """Load simple KEY=VALUE lines without overriding the process environment."""
+    """Load simple KEY=VALUE entries without overriding process environment."""
 
     if not path.is_file():
         return
@@ -41,9 +41,12 @@ def load_dotenv(path: Path = Path(".env")) -> None:
 
 def env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default if value is None else value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def positive_int(value: str) -> int:
@@ -66,6 +69,26 @@ def non_negative_int(value: str) -> int:
     return parsed
 
 
+def positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
 def stagnation_window(value: str) -> int:
     parsed = positive_int(value)
     if parsed < 2:
@@ -74,13 +97,19 @@ def stagnation_window(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PaiCLI Python learning agent")
+    parser = argparse.ArgumentParser(description="PaiCLI Python coding agent")
     parser.add_argument("-p", "--prompt", help="Run one prompt and exit")
     parser.add_argument(
         "--mode",
         choices=("react", "plan", "team"),
         default="react",
         help="Execution mode for ordinary prompts",
+    )
+    parser.add_argument("--resume", metavar="RUN_ID", help="Resume a persisted run")
+    parser.add_argument(
+        "--list-runs",
+        action="store_true",
+        help="List recent persisted runs without connecting to a model",
     )
     parser.add_argument(
         "--project-root",
@@ -93,72 +122,58 @@ def build_parser() -> argparse.ArgumentParser:
         type=positive_int,
         default=AgentBudget.DEFAULT_HARD_MAX_ITERATIONS,
     )
-    parser.add_argument(
-        "--subagent-max-steps",
-        type=positive_int,
-        default=12,
-        help="Maximum model iterations for each worker/reviewer sub-agent turn",
-    )
+    parser.add_argument("--subagent-max-steps", type=positive_int, default=12)
     parser.add_argument(
         "--stagnation-window",
         type=stagnation_window,
         default=AgentBudget.DEFAULT_STAGNATION_WINDOW,
-        help="Stop after this many identical action/observation rounds",
     )
     parser.add_argument(
         "--token-budget",
         type=positive_int,
-        help="Optional per-agent input+output token budget",
+        help="Per-Agent input+output token limit",
     )
-    parser.add_argument(
-        "--plan-workers",
-        type=positive_int,
-        default=4,
-        help="Maximum parallel read-only workers in plan mode",
-    )
-    parser.add_argument(
-        "--plan-revisions",
-        type=non_negative_int,
-        default=2,
-        help="Maximum pre-execution plan revisions requested by the user",
-    )
-    parser.add_argument(
-        "--team-workers",
-        type=positive_int,
-        default=2,
-        help="Maximum parallel read-only workers in team mode",
-    )
-    parser.add_argument(
-        "--review-retries",
-        type=non_negative_int,
-        default=2,
-        help="Local worker retries after changes_requested",
-    )
+    parser.add_argument("--plan-workers", type=positive_int, default=4)
+    parser.add_argument("--plan-revisions", type=non_negative_int, default=2)
+    parser.add_argument("--team-workers", type=positive_int, default=2)
+    parser.add_argument("--review-retries", type=non_negative_int, default=2)
     parser.add_argument(
         "--provider",
         choices=sorted(LlmClientFactory.PROVIDERS),
-        help="Use a configured cloud provider or OpenAI-compatible vLLM server",
+        help="Configured cloud provider or OpenAI-compatible vLLM",
     )
     parser.add_argument(
         "--renderer",
         choices=("plain", "inline"),
         default="inline",
     )
+    parser.add_argument("--allow-shell", action="store_true")
     parser.add_argument(
-        "--allow-shell",
-        action="store_true",
-        help="Allow scoped workers to execute shell commands",
+        "--approval-mode",
+        choices=tuple(item.value for item in ApprovalMode),
+        default=ApprovalMode.ASK.value,
+        help="ASK for side effects, DENY them, or explicitly ALLOW them",
     )
     parser.add_argument(
-        "--memory-file",
-        type=Path,
-        help="Long-term memory JSONL path (default: ~/.paicli/memory.jsonl)",
+        "--rollback-on-failure",
+        choices=tuple(item.value for item in RollbackPolicy),
+        default=RollbackPolicy.ALWAYS.value,
     )
-    parser.add_argument(
-        "--no-memory",
-        action="store_true",
-        help="Disable context compaction, retrieval, and save_memory",
-    )
+    parser.add_argument("--no-snapshot", action="store_true")
+    parser.add_argument("--memory-file", type=Path)
+    parser.add_argument("--no-memory", action="store_true")
+    parser.add_argument("--state-path", type=Path)
+    parser.add_argument("--trace-path", type=Path)
+    parser.add_argument("--audit-path", type=Path)
+    parser.add_argument("--no-trace", action="store_true")
+    parser.add_argument("--llm-max-attempts", type=positive_int, default=3)
+    parser.add_argument("--llm-base-delay", type=non_negative_float, default=0.25)
+    parser.add_argument("--llm-max-delay", type=non_negative_float, default=4.0)
+    parser.add_argument("--max-run-tokens", type=positive_int)
+    parser.add_argument("--max-run-cost-cny", type=positive_float)
+    parser.add_argument("--max-run-seconds", type=positive_float)
+    parser.add_argument("--max-model-calls", type=positive_int)
+    parser.add_argument("--max-tool-calls", type=positive_int)
     parser.add_argument(
         "--check-model",
         choices=("chat", "tools"),
@@ -170,6 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     load_dotenv()
     args = build_parser().parse_args()
+    root = args.project_root.expanduser().resolve()
+    # A project-local .env is useful when PaiCLI is launched from another cwd.
+    load_dotenv(root / ".env")
+    state_path = args.state_path or root / ".paicli" / "runs.db"
+
+    if args.list_runs:
+        return print_recent_runs(state_path)
 
     try:
         client = (
@@ -185,47 +207,104 @@ def main() -> int:
         return run_model_probe(client, args.check_model)
 
     renderer = create_renderer(args.renderer)
-    runtime = build_application_runtime(
-        client,
-        args.project_root,
-        allow_shell=args.allow_shell or env_flag("PAICLI_ALLOW_SHELL"),
-        enable_memory=not args.no_memory,
-        memory_path=args.memory_file,
-        max_steps=args.max_steps,
-        subagent_max_steps=args.subagent_max_steps,
-        token_budget=args.token_budget,
-        stagnation_window=args.stagnation_window,
-        plan_workers=args.plan_workers,
-        plan_revisions=args.plan_revisions,
-        team_workers=args.team_workers,
-        review_retries=args.review_retries,
-        # Final answers are printed exactly once by run_selected_mode.
-        on_event=lambda kind, text: (
-            renderer.event(kind, text) if kind != "answer" else None
-        ),
-    )
-    image_processor = ImageProcessor(args.project_root)
 
-    if args.prompt:
-        try:
-            prompt, images = image_processor.from_prompt(args.prompt)
-        except ValueError as exc:
-            print(f"Input error: {exc}")
-            return 2
-        return run_selected_mode(runtime, args.mode, prompt, tuple(images))
+    def event(kind: str, text: str) -> None:
+        if kind != "answer":
+            renderer.event(kind, text)
 
-    provider = getattr(client, "provider", "custom")
-    renderer.status(
+    try:
+        runtime = build_application_runtime(
+            client,
+            root,
+            allow_shell=args.allow_shell or env_flag("PAICLI_ALLOW_SHELL"),
+            enable_memory=not args.no_memory,
+            memory_path=args.memory_file,
+            max_steps=args.max_steps,
+            subagent_max_steps=args.subagent_max_steps,
+            stagnation_window=args.stagnation_window,
+            token_budget=args.token_budget,
+            plan_workers=args.plan_workers,
+            plan_revisions=args.plan_revisions,
+            team_workers=args.team_workers,
+            review_retries=args.review_retries,
+            on_event=event,
+            enable_hitl=True,
+            approval_mode=args.approval_mode,
+            audit_path=args.audit_path,
+            enable_trace=not args.no_trace,
+            trace_path=args.trace_path or root / ".paicli" / "traces.db",
+            llm_max_attempts=args.llm_max_attempts,
+            llm_base_delay_seconds=args.llm_base_delay,
+            llm_max_delay_seconds=args.llm_max_delay,
+        )
+        coordinator = RunCoordinator(
+            runtime,
+            root,
+            state_store=RunStateStore(state_path),
+            enable_snapshots=not args.no_snapshot,
+            limits=RunLimits(
+                max_tokens=args.max_run_tokens,
+                max_cost_cny=args.max_run_cost_cny,
+                max_seconds=args.max_run_seconds,
+                max_model_calls=args.max_model_calls,
+                max_tool_calls=args.max_tool_calls,
+            ),
+            rollback_policy=args.rollback_on_failure,
+            rollback_handler=interactive_rollback_decision,
+        )
+    except (ValueError, OSError) as exc:
+        print(f"Runtime configuration error: {exc}")
+        return 2
+
+    try:
+        if args.resume:
+            result = coordinator.resume(
+                args.resume,
+                plan_approval=(
+                    interactive_plan_approval if args.mode == "plan" else None
+                ),
+            )
+            return print_coordinated_result(runtime, result)
+
+        image_processor = ImageProcessor(root)
+        if args.prompt:
+            try:
+                prompt, images = image_processor.from_prompt(args.prompt)
+            except ValueError as exc:
+                print(f"Input error: {exc}")
+                return 2
+            result = coordinator.execute(
+                args.mode,
+                prompt,
+                images=tuple(images),
+                # Non-interactive -p executes a validated Plan automatically.
+                plan_approval=None,
+            )
+            return print_coordinated_result(runtime, result)
+
+        return interactive_loop(runtime, coordinator, image_processor, renderer)
+    finally:
+        coordinator.close()
+
+
+def interactive_loop(
+    runtime: ApplicationRuntime,
+    coordinator: RunCoordinator,
+    image_processor: ImageProcessor,
+    renderer: object,
+) -> int:
+    client = runtime.client
+    renderer.status(  # type: ignore[attr-defined]
         StatusInfo(
-            provider,
-            client.model,
-            args.mode,
-            f"window={runtime.settings.window} memory={'off' if args.no_memory else 'on'}",
+            str(getattr(client, "provider", "custom")),
+            str(getattr(client, "model", "unknown")),
+            "react",
+            f"window={runtime.settings.window} memory={'on' if runtime.react.memory else 'off'}",
         )
     )
     print(
-        "\nCommands: /help, /plan <task>, /team <task>, /tools, /model, "
-        "/context, /history, /clear, /exit"
+        "\nCommands: /plan <goal>, /team <goal>, /runs, /resume <run_id>, "
+        "/tools, /model, /context, /history, /clear, /exit"
     )
     history = PaiCliHistory(Path.home() / ".paicli" / "history.json")
     while True:
@@ -241,100 +320,122 @@ def main() -> int:
         except ValueError as exc:
             print(f"Error: {exc}")
             continue
-        if command:
-            if handle_command(command, runtime, history):
+        if command is not None:
+            exit_requested = handle_runtime_command(
+                command,
+                runtime,
+                coordinator,
+                history,
+            )
+            if exit_requested:
                 return 0
             continue
 
         history.add(prompt)
         try:
             clean_prompt, images = image_processor.from_prompt(prompt)
-        except ValueError as exc:
-            print(f"Input error: {exc}")
-            continue
-        run_selected_mode(
-            runtime,
-            args.mode,
-            clean_prompt,
-            tuple(images),
-            plan_approval=(
-                interactive_plan_approval if args.mode == "plan" else None
-            ),
-        )
+            result = coordinator.execute(
+                "react",
+                clean_prompt,
+                images=tuple(images),
+            )
+            print_coordinated_result(runtime, result)
+        except (ValueError, LlmError) as exc:
+            print(f"Error: {exc}")
 
 
-def handle_command(
+def handle_runtime_command(
     command: CliCommand,
     runtime: ApplicationRuntime,
+    coordinator: RunCoordinator,
     history: PaiCliHistory,
-    *,
-    plan_approval: PlanApproval | None = None,
 ) -> bool:
-    """Execute one local slash command; only /exit returns True."""
-
-    agent = runtime.react.agent
     if command.name == "exit":
         return True
     if command.name == "clear":
-        agent.clear_history()
-        print("ReAct history cleared. Plan/Team sub-agents are isolated per run.")
+        runtime.react.agent.clear_history()
+        print("History cleared.")
     elif command.name == "tools":
         print("\n".join(f"- {name}" for name in runtime.tools.names()))
     elif command.name == "history":
         print("\n".join(history.recent()) or "(empty)")
     elif command.name in {"context", "config"}:
-        client = agent.client
-        print(
-            f"model={getattr(client, 'model', 'unknown')} "
-            f"provider={getattr(client, 'provider', 'custom')} "
-            f"messages={len(agent.history)} max_steps={agent.max_steps} "
-            f"subagent_max_steps={runtime.subagents.max_steps} "
-            f"stagnation_window={agent.stagnation_window} "
-            f"token_budget={agent.token_budget or 'unlimited-per-agent'} "
-            f"context_window={runtime.settings.window} "
-            f"plan_workers={runtime.plan.concurrency.max_workers} "
-            f"plan_revisions={runtime.plan.max_plan_revisions} "
-            f"team_workers={runtime.team.concurrency.max_workers} "
-            f"review_retries={runtime.team.max_review_retries} "
-            f"memory={agent.memory.status() if agent.memory else 'disabled'}"
-        )
+        print_runtime_context(runtime)
     elif command.name == "model":
         if len(command.arguments) != 1:
-            print("Usage: /model <glm|deepseek|stepfun|kimi|vllm>")
+            print("Usage: /model <dashscope|glm|deepseek|stepfun|kimi|vllm>")
         else:
             try:
                 runtime.set_client(LlmClientFactory.create(command.arguments[0]))
-                print(f"Switched to {runtime.react.agent.client.model}.")
+                print(f"Switched to {getattr(runtime.client, 'model', 'unknown')}.")
             except ValueError as exc:
                 print(f"Configuration error: {exc}")
-    elif command.name == "plan":
+    elif command.name in {"plan", "team"}:
         goal = " ".join(command.arguments).strip()
         if not goal:
-            print("Usage: /plan <task>")
+            print(f"Usage: /{command.name} <task>")
         else:
-            run_selected_mode(
-                runtime,
-                "plan",
+            history.add(goal)
+            result = coordinator.execute(
+                command.name,
                 goal,
-                (),
-                plan_approval=plan_approval or interactive_plan_approval,
+                plan_approval=(
+                    interactive_plan_approval if command.name == "plan" else None
+                ),
             )
-    elif command.name == "team":
-        goal = " ".join(command.arguments).strip()
-        if not goal:
-            print("Usage: /team <task>")
+            print_coordinated_result(runtime, result)
+    elif command.name == "runs":
+        print_runs(coordinator.recent_runs())
+    elif command.name == "resume":
+        if len(command.arguments) != 1:
+            print("Usage: /resume <run_id>")
         else:
-            run_selected_mode(runtime, "team", goal, ())
+            try:
+                result = coordinator.resume(command.arguments[0])
+            except (KeyError, ValueError) as exc:
+                print(f"Resume error: {exc}")
+            else:
+                print_coordinated_result(runtime, result)
     elif command.name == "help":
         print(
-            "/plan <task> /team <task> /tools /model /context /config "
-            "/history /clear /exit"
+            "/plan <goal> /team <goal> /runs /resume <run_id> /tools "
+            "/model /context /config /history /clear /exit"
         )
     return False
 
 
+# Compatibility command helper retained for earlier tests/library examples.
+def handle_command(
+    command: CliCommand,
+    agent: Agent,
+    tools: object,
+    history: PaiCliHistory,
+) -> bool:
+    if command.name == "exit":
+        return True
+    if command.name == "clear":
+        agent.clear_history()
+        print("History cleared.")
+    elif command.name == "tools":
+        print("\n".join(f"- {name}" for name in tools.names()))  # type: ignore[attr-defined]
+    elif command.name == "history":
+        print("\n".join(history.recent()) or "(empty)")
+    elif command.name in {"context", "config"}:
+        print(
+            f"model={getattr(agent.client, 'model', 'unknown')} "
+            f"messages={len(agent.history)} max_steps={agent.max_steps}"
+        )
+    elif command.name == "model":
+        if len(command.arguments) != 1:
+            print("Usage: /model <provider>")
+        else:
+            agent.set_client(LlmClientFactory.create(command.arguments[0]))
+    elif command.name == "help":
+        print("/tools /model /context /config /history /clear /exit")
+    return False
+
+
 def interactive_plan_approval(plan: ExecutionPlan) -> PlanReviewDecision:
-    del plan  # The validated plan was already emitted by PlanModeRuntime.
     while True:
         try:
             value = input(
@@ -347,7 +448,7 @@ def interactive_plan_approval(plan: ExecutionPlan) -> PlanReviewDecision:
             return PlanReviewDecision.execute()
         if value in {"n", "no", "cancel"}:
             return PlanReviewDecision.cancel()
-        if value in {"e", "edit", "i", "supplement"}:
+        if value in {"e", "edit", "supplement"}:
             try:
                 feedback = input("Plan changes> ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -356,8 +457,17 @@ def interactive_plan_approval(plan: ExecutionPlan) -> PlanReviewDecision:
             if feedback:
                 return PlanReviewDecision.supplement(feedback)
             print("Plan changes cannot be empty.")
-            continue
-        print("Choose Y to execute, N to cancel, or E to revise the plan.")
+        else:
+            print("Choose Y to execute, N to cancel, or E to revise the plan.")
+
+
+def interactive_rollback_decision(message: str) -> bool:
+    try:
+        value = input(f"{message} [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return True
+    return value not in {"n", "no", "keep"}
 
 
 def run_selected_mode(
@@ -368,38 +478,25 @@ def run_selected_mode(
     *,
     plan_approval: PlanApproval | None = None,
 ) -> int:
-    """Run one user request through the selected public execution mode."""
+    """Direct compatibility adapter; production CLI uses RunCoordinator."""
 
     if mode == "react":
         return run_once(runtime.react.agent, prompt, images)
     if images:
         print("Input error: Plan and Team modes currently accept text tasks only")
         return 2
-
-    if mode not in {"plan", "team"}:
+    if mode == "plan":
+        result = runtime.plan.run(prompt, approval=plan_approval)
+    elif mode == "team":
+        result = runtime.team.run(prompt)
+    else:
         print(f"Input error: unknown execution mode {mode!r}")
         return 2
-
-    try:
-        result = (
-            runtime.plan.run(prompt, approval=plan_approval)
-            if mode == "plan"
-            else runtime.team.run(prompt)
-        )
-    except (PlanGenerationError, AgentLoopError, CancelledError, LlmError, ValueError) as exc:
-        print(f"\nError: {exc}")
-        return 1
     print(f"\n{result.answer}")
-    return orchestration_exit_code(result)
-
-
-def orchestration_exit_code(result: OrchestrationResult) -> int:
-    if result.status in {
+    return 0 if result.status in {
         OrchestrationStatus.SUCCEEDED,
         OrchestrationStatus.CANCELLED,
-    }:
-        return 0
-    return 1
+    } else 1
 
 
 def run_once(
@@ -414,6 +511,70 @@ def run_once(
     except (AgentLoopError, CancelledError, LlmError, ValueError) as exc:
         print(f"\nError: {exc}")
         return 1
+
+
+def print_coordinated_result(
+    runtime: ApplicationRuntime,
+    result: CoordinatedRun,
+) -> int:
+    print(f"\n{result.answer or '(no final answer)'}")
+    print(
+        f"\n[run] id={result.run_id} mode={result.mode} status={result.status} "
+        f"rolled_back={str(result.rolled_back).lower()}"
+    )
+    if result.error:
+        print(f"[run] error={result.error}")
+    if runtime.trace_store is not None:
+        try:
+            summary = runtime.trace_store.run_summary(result.run_id)
+        except KeyError:
+            pass
+        else:
+            print(
+                "[metrics] "
+                f"tokens={summary['input_tokens'] + summary['output_tokens']} "
+                f"model_calls={summary['model_calls']} "
+                f"tool_calls={summary['tool_calls']} "
+                f"model_errors={summary['model_errors']} "
+                f"tool_errors={summary['tool_errors']} "
+                f"elapsed_ms={summary['elapsed_ms']} "
+                f"estimated_cost_cny={summary['estimated_cost_cny']:.6f} "
+                f"unpriced_calls={summary['unpriced_model_calls']}"
+            )
+    return result.exit_code
+
+
+def print_runtime_context(runtime: ApplicationRuntime) -> None:
+    agent = runtime.react.agent
+    print(
+        f"model={getattr(runtime.client, 'model', 'unknown')} "
+        f"provider={getattr(runtime.client, 'provider', 'custom')} "
+        f"messages={len(agent.history)} max_steps={agent.max_steps} "
+        f"stagnation_window={agent.stagnation_window} "
+        f"token_budget={agent.token_budget or 'unlimited'} "
+        f"context_window={runtime.settings.window} "
+        f"memory={agent.memory.status() if agent.memory else 'disabled'}"
+    )
+
+
+def print_recent_runs(path: Path) -> int:
+    store = RunStateStore(path)
+    try:
+        print_runs(store.recent())
+    finally:
+        store.close()
+    return 0
+
+
+def print_runs(runs: list[object]) -> None:
+    if not runs:
+        print("(no persisted runs)")
+        return
+    for run in runs:
+        print(
+            f"{run.run_id}\t{run.status}\t{run.mode}\t"
+            f"{run.updated_at:.3f}\t{run.goal[:80]}"  # type: ignore[attr-defined]
+        )
 
 
 def run_model_probe(client: OpenAICompatibleClient, mode: ProbeMode) -> int:

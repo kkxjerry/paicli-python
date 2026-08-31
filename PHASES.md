@@ -99,3 +99,21 @@ git show phase-03-cn:paicli/memory.py
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+
+## Integrated product line (Phase 0–15)
+
+The original 22 tags are educational snapshots. Current `develop` adds one integrated runtime line:
+
+- Phase 0–2: shared Agent loop, budgets, stagnation and usage.
+- Phase 3–5: validated Tool Gateway, real context/memory wiring and LLM Planner.
+- Phase 6–8: CLI Plan/Team, isolated SubAgents, Reviewer and bounded concurrency.
+- Phase 9: real DashScope chat, Function Calling, ReAct, Plan and Team gates.
+- Phase 10: HITL, diff/command preview, snapshots, rollback and deterministic verification.
+- Phase 11: retries, parent budgets, Trace and metrics.
+- Phase 12: SQLite checkpoints and safe resume.
+- Phase 13: fixed-task evaluation and baseline/candidate comparison.
+- Phase 14: persistent hybrid code retrieval and managed memory.
+- Phase 15: installable 1.0.0 release, CI and independent reproduction docs.
+
+Start with `README.md` for operation and `ARCHITECTURE.md` for the current call graph. Use old tags only to study how one capability was introduced.

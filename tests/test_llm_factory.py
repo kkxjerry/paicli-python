@@ -23,6 +23,39 @@ class LlmFactoryTest(unittest.TestCase):
         self.assertEqual("deepseek-reasoner", client.model)
         self.assertTrue(client.supports_prompt_caching)
 
+    def test_builds_dashscope_from_its_native_environment_contract(self) -> None:
+        client = LlmClientFactory.create(
+            "dashscope",
+            environ={
+                "DASHSCOPE_API_KEY": "secret",
+                "DASHSCOPE_MODEL": "qwen-plus",
+                "DASHSCOPE_BASE_URL": (
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                "DASHSCOPE_CONTEXT_WINDOW": "200000",
+                "DASHSCOPE_TIMEOUT_SECONDS": "45",
+            },
+        )
+
+        self.assertEqual("dashscope", client.provider)
+        self.assertEqual("qwen-plus", client.model)
+        self.assertEqual(200_000, client.context_window)
+        self.assertEqual(45.0, client.timeout_seconds)
+        self.assertTrue(client.supports_prompt_caching)
+
+    def test_provider_runtime_numbers_are_validated(self) -> None:
+        base = {"DASHSCOPE_API_KEY": "secret"}
+        with self.assertRaisesRegex(ValueError, "TIMEOUT_SECONDS"):
+            LlmClientFactory.create(
+                "dashscope",
+                environ={**base, "DASHSCOPE_TIMEOUT_SECONDS": "zero"},
+            )
+        with self.assertRaisesRegex(ValueError, "CONTEXT_WINDOW"):
+            LlmClientFactory.create(
+                "dashscope",
+                environ={**base, "DASHSCOPE_CONTEXT_WINDOW": "100"},
+            )
+
     def test_rejects_unknown_provider(self) -> None:
         """验证未注册的 provider 会立即报错，而不是发起错误的网络请求。"""
 

@@ -28,10 +28,11 @@ from .context import ContextController, ContextSettings
 from .llm_client import ChatResponse, LlmClient
 from .lsp import LspManager
 from .memory import ConversationHistoryCompactor, LongTermMemory, MemoryManager
+from .observability import TraceStore, current_trace_context, traced_span
 from .planning import ExecutionPlan, Task, TaskType
 from .runtime import CancellationToken
 from .tool_contracts import ToolResult, ToolSideEffect
-from .tools import ScopedToolRuntime, ToolRegistry
+from .tools import ScopedToolRuntime, ToolGateway, ToolRegistry
 
 EventHandler = Callable[[str, str], None]
 
@@ -73,6 +74,7 @@ class TaskPacket:
     acceptance_criteria: tuple[str, ...] = ()
     attempt: int = 1
     review_feedback: tuple[str, ...] = ()
+    run_id: str = ""
 
     @classmethod
     def from_task(
@@ -84,6 +86,7 @@ class TaskPacket:
         changed_files: Mapping[str, tuple[str, ...]] | None = None,
         attempt: int = 1,
         review_feedback: tuple[str, ...] = (),
+        run_id: str | None = None,
     ) -> TaskPacket:
         file_map = changed_files or {}
         dependencies = tuple(
@@ -105,10 +108,12 @@ class TaskPacket:
             task.acceptance_criteria,
             attempt,
             review_feedback,
+            current_trace_context().run_id if run_id is None else run_id,
         )
 
     def render(self) -> str:
         payload = {
+            "run_id": self.run_id,
             "plan_id": self.plan_id,
             "goal": self.goal,
             "task": {
@@ -139,7 +144,7 @@ class TaskPacket:
 class TaskCompletionPolicy:
     """Require observable side effects for mutation and command tasks."""
 
-    def __init__(self, task: Task, tools: ToolRegistry) -> None:
+    def __init__(self, task: Task, tools: ToolGateway) -> None:
         self.task = task
         self.tools = tools
         self.non_empty = NonEmptyCompletionPolicy()
@@ -235,14 +240,36 @@ class SubAgent:
     role: SubAgentRole
     scope: ToolScope
     agent: Agent
+    trace_store: TraceStore | None = None
 
     def run_task(self, packet: TaskPacket) -> AgentOutcome:
         if self.role is not SubAgentRole.WORKER:
             raise ValueError("run_task is only valid for worker sub-agents")
-        return self._run_safely(packet.render())
+        with traced_span(
+            self.trace_store,
+            "agent",
+            self.name,
+            run_id=packet.run_id,
+            task_id=packet.task_id,
+            agent_role=self.role.value,
+            agent_name=self.name,
+            attributes={"tool_scope": self.scope.value},
+        ):
+            return self._run_safely(packet.render())
 
     def run_prompt(self, prompt: str) -> AgentOutcome:
-        return self._run_safely(prompt)
+        context = current_trace_context()
+        with traced_span(
+            self.trace_store,
+            "agent",
+            self.name,
+            run_id=context.run_id,
+            task_id=context.task_id,
+            agent_role=self.role.value,
+            agent_name=self.name,
+            attributes={"tool_scope": self.scope.value},
+        ):
+            return self._run_safely(prompt)
 
     def _run_safely(self, prompt: str) -> AgentOutcome:
         try:
@@ -289,7 +316,7 @@ Return a concise user-facing answer without tool calls."""
     def __init__(
         self,
         client: LlmClient,
-        tools: ToolRegistry,
+        tools: ToolGateway,
         project_root: str | Path,
         *,
         long_term_memory: LongTermMemory | None = None,
@@ -299,6 +326,7 @@ Return a concise user-facing answer without tool calls."""
         token_budget: int | None = None,
         on_event: EventHandler | None = None,
         cancellation: CancellationToken | None = None,
+        trace_store: TraceStore | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("sub-agent max_steps must be positive")
@@ -312,6 +340,7 @@ Return a concise user-facing answer without tool calls."""
         self.token_budget = token_budget
         self.on_event = on_event or (lambda _kind, _text: None)
         self.cancellation = cancellation or CancellationToken()
+        self.trace_store = trace_store
         self._event_lock = threading.Lock()
 
     def set_client(self, client: LlmClient) -> None:
@@ -392,7 +421,7 @@ Return a concise user-facing answer without tool calls."""
             completion_policy=completion_policy,
             system_prompt=system_prompt,
         )
-        return SubAgent(name, role, scope, agent)
+        return SubAgent(name, role, scope, agent, self.trace_store)
 
     def scope_for_task(self, task: Task) -> ToolScope:
         if task.task_type in {TaskType.FILE_READ, TaskType.ANALYSIS}:

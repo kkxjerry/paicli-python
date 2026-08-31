@@ -647,7 +647,7 @@ def _leading_system_count(messages: list[dict[str, Any]]) -> int:
 
 def register_memory_tool(
     registry: ToolRegistry,
-    long_term: LongTermMemory,
+    long_term: Any,
 ) -> None:
     """把“明确保存长期记忆”注册成 Agent 可调用的工具。
 
@@ -662,7 +662,19 @@ def register_memory_tool(
             raise ValueError("memory content cannot be empty")
         # JSON 数组在内部转为不可变 tuple，与 MemoryEntry.tags 的类型一致。
         tags = tuple(str(tag) for tag in arguments.get("tags", []))
-        long_term.save(content, tags)
+        save_record = getattr(long_term, "save_record", None)
+        if callable(save_record):
+            save_record(
+                content,
+                tags=tags,
+                kind=str(arguments.get("kind", "fact")),
+                source=str(arguments.get("source", "")),
+                source_hash=str(arguments.get("source_hash", "")),
+                confidence=float(arguments.get("confidence", 1.0)),
+                supersedes_id=str(arguments.get("supersedes_id", "")),
+            )
+        else:
+            long_term.save(content, tags)
         return "Memory saved."
 
     # ToolSpec 会同时被用于：告诉模型工具定义，以及把调用路由到 save_memory。
@@ -682,6 +694,18 @@ def register_memory_tool(
                         "maxItems": 20,
                         "items": {"type": "string", "maxLength": 100},
                     },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["fact", "preference", "experience", "decision"],
+                    },
+                    "source": {"type": "string", "maxLength": 500},
+                    "source_hash": {"type": "string", "maxLength": 200},
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "supersedes_id": {"type": "string", "maxLength": 100},
                 },
                 required=["content"],
             ),
