@@ -56,6 +56,14 @@ class CodeChunk:
         return self.symbol
 
     @property
+    def file(self) -> str:
+        return self.path
+
+    @property
+    def text(self) -> str:
+        return self.content
+
+    @property
     def terms(self) -> Counter[str]:
         return Counter(_tokenize(f"{self.path} {self.symbol} {self.content}"))
 
@@ -90,6 +98,10 @@ class SearchResult:
     @property
     def content(self) -> str:
         return self.chunk.content
+
+    @property
+    def similarity(self) -> float:
+        return self.score
 
     def __iter__(self):
         yield self.chunk
@@ -423,6 +435,11 @@ class CodeIndex:
     index_project = build
     index = build
 
+    def rebuild(self) -> int:
+        """Backward-compatible full/incremental rebuild returning chunk count."""
+
+        return int(self.build()["chunks"])
+
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         if top_k < 1:
             raise ValueError("top_k must be positive")
@@ -435,6 +452,21 @@ class CodeIndex:
         channels: dict[str, list[tuple[str, float]]] = {}
 
         normalized_query = _normalize_identifier(query)
+        strict_identifier = bool(
+            "_" in query
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query.strip())
+        )
+        if strict_identifier:
+            chunks = {
+                chunk_id: chunk
+                for chunk_id, chunk in chunks.items()
+                if normalized_query
+                in _normalize_identifier(
+                    f"{chunk.path} {chunk.symbol} {chunk.content}"
+                )
+            }
+            if not chunks:
+                return []
         exact = []
         for chunk in chunks.values():
             symbol = _normalize_identifier(chunk.symbol)

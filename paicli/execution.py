@@ -363,7 +363,7 @@ class RunCoordinator:
                     answer = orchestration.answer
                     status = _stored_status(orchestration.status)
         except RunBudgetExceeded as exc:
-            error = f"{exc.reason}: {exc.snapshot}"
+            error = str(exc)
             status = StoredRunStatus.FAILED
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

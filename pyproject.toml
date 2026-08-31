@@ -4,14 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paicli-python"
-version = "0.22.0"
-description = "A 22-phase Python coding-agent learning project"
+version = "1.0.0"
+description = "A local ReAct, Plan, and Team coding-agent harness"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
 paicli = "paicli.__main__:main"
+paicli-eval = "paicli.evaluation:main"
 
 [tool.setuptools.packages.find]
 include = ["paicli*"]

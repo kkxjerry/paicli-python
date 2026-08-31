@@ -17,8 +17,8 @@ from .interaction import CliCommand, CliCommandParser, PaiCliHistory, normalize_
 from .llm_client import LlmClientFactory, LlmError, OpenAICompatibleClient
 from .model_probe import ProbeMode, probe_model
 from .observability import RunLimits
-from .orchestration import OrchestrationStatus, PlanApproval
-from .planning import ExecutionPlan, PlanReviewDecision
+from .orchestration import OrchestrationStatus, PlanApproval, PlanReviewDecision
+from .planning import ExecutionPlan
 from .policy import ApprovalMode
 from .rendering import StatusInfo, create_renderer
 from .runtime import CancelledError
@@ -493,7 +493,14 @@ def run_selected_mode(
         print(f"Input error: unknown execution mode {mode!r}")
         return 2
     print(f"\n{result.answer}")
-    return 0 if result.status in {
+    return orchestration_exit_code(result)
+
+
+def orchestration_exit_code(result: object) -> int:
+    """Map orchestration status to a stable CLI return code."""
+
+    status = getattr(result, "status", None)
+    return 0 if status in {
         OrchestrationStatus.SUCCEEDED,
         OrchestrationStatus.CANCELLED,
     } else 1

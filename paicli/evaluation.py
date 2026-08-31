@@ -181,8 +181,8 @@ class AgentCaseExecutor:
         provider: str,
         *,
         environ: Mapping[str, str] | None = None,
-        max_model_calls: int = 40,
-        max_tool_calls: int = 80,
+        max_model_calls: int = 80,
+        max_tool_calls: int = 120,
     ) -> None:
         self.provider = provider
         self.environ = dict(os.environ if environ is None else environ)
@@ -199,7 +199,7 @@ class AgentCaseExecutor:
             allow_shell=True,
             enable_memory=False,
             max_steps=30,
-            subagent_max_steps=16,
+            subagent_max_steps=20,
             plan_workers=2,
             team_workers=2,
             review_retries=2,

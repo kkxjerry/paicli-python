@@ -148,6 +148,15 @@ class RunStateStore:
                     now,
                 ),
             )
+            # Persist the initial state as checkpoint 1 so recovery has an
+            # immutable run-start boundary before any planner or tool effect.
+            self._connection.execute(
+                """INSERT INTO checkpoints(
+                       run_id, sequence, phase, plan_json, records_json,
+                       current_task_id, current_task_snapshot_id, created_at
+                   ) VALUES (?, 1, 'created', '', '{}', '', '', ?)""",
+                (run_id, now),
+            )
         return self.load(run_id)
 
     def checkpoint(
@@ -327,6 +336,14 @@ class RunStateStore:
                 (run_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def checkpoint_count(self, run_id: str) -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM checkpoints WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
 
     def close(self) -> None:
         with self._lock:

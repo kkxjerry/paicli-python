@@ -48,7 +48,7 @@
     {
       "id": "team-fix-division",
       "mode": "team",
-      "prompt": "Inspect calculator.py and test_calculator.py. Fix divide(a, b) so division by zero raises ValueError with a clear message. Add or update deterministic unittests for normal division and the zero-divisor case, run the complete unittest suite, and have the reviewer inspect the actual changed files before approval.",
+      "prompt": "Inspect calculator.py and test_calculator.py. Fix divide(a, b) so division by zero raises ValueError with a clear message. Add or update deterministic unittests for normal division and the zero-divisor case, run the complete unittest suite, and have the reviewer inspect the actual changed files before approval. Use the smallest sufficient DAG: combine both reads into one FILE_READ task, use at most two FILE_WRITE tasks, and finish with one VERIFICATION task; do not add redundant analysis or verification tasks.",
       "files": {
         "calculator.py": "def divide(a: float, b: float) -> float:\n    return a / b\n",
         "test_calculator.py": "import unittest\n\nfrom calculator import divide\n\n\nclass CalculatorTest(unittest.TestCase):\n    def test_divide(self) -> None:\n        self.assertEqual(2.0, divide(6.0, 3.0))\n\n\nif __name__ == '__main__':\n    unittest.main()\n"

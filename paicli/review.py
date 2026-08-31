@@ -89,6 +89,7 @@ class ReviewerAgent:
                 )
                 continue
 
+            result = _normalize_locally_repairable_rejection(packet, worker, result)
             missing = _missing_changed_file_evidence(worker, outcomes)
             if result.verdict is ReviewVerdict.APPROVED and missing:
                 return ReviewRun(
@@ -205,9 +206,50 @@ class ReviewerAgent:
             "Return exactly one JSON object:\n"
             '{"verdict":"approved|changes_requested|rejected",'
             '"summary":"...","issues":[],"suggestions":[],'
-            '"evidence":[],"retryable":true}\n\n'
+            '"evidence":[],"retryable":true}\n'
+            "Use changes_requested with retryable=true for any defect that can "
+            "be fixed by redoing only this assigned task, including an incorrect "
+            "implementation in a changed file. Use rejected only for unsafe work, "
+            "a false prerequisite, an out-of-scope request, or a problem that "
+            "requires changing the plan.\n\n"
             + json.dumps(payload, ensure_ascii=False, indent=2)
         )
+
+
+def _normalize_locally_repairable_rejection(
+    packet: TaskPacket,
+    worker: AgentOutcome,
+    result: ReviewResult,
+) -> ReviewResult:
+    """Keep model wording but enforce the review protocol's local-repair rule."""
+
+    if result.verdict is not ReviewVerdict.REJECTED or not worker.changed_files:
+        return result
+    text = " ".join((result.summary, *result.issues)).lower()
+    terminal_markers = (
+        "unsafe",
+        "unauthorized",
+        "permission",
+        "false prerequisite",
+        "out of scope",
+        "out-of-scope",
+        "change the plan",
+        "replan",
+        "cannot be repaired",
+    )
+    if any(marker in text for marker in terminal_markers):
+        return result
+    return ReviewResult(
+        verdict=ReviewVerdict.CHANGES_REQUESTED,
+        summary=result.summary,
+        issues=result.issues or (
+            f"Task {packet.task_id} did not satisfy its acceptance criteria.",
+        ),
+        suggestions=result.suggestions,
+        evidence=result.evidence,
+        error=result.error,
+        retryable=True,
+    )
 
 
 def _missing_changed_file_evidence(

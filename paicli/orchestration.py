@@ -338,7 +338,7 @@ class _PlanWorkerExecutor:
         if not outcome.succeeded:
             raise TaskAgentExecutionError(task.id, outcome)
         self.on_event("task", f"{task.id} completed")
-        return outcome.content
+        return _grounded_task_result(outcome)
 
 
 class PlanModeRuntime:
@@ -819,6 +819,28 @@ class TeamModeRuntime:
 
         task.mark_failed("review loop ended without a verdict")
         return finish()
+
+
+def _grounded_task_result(outcome: AgentOutcome) -> str:
+    """Preserve the worker summary while carrying raw successful observations.
+
+    Downstream workers must not rely solely on a model-authored summary: a
+    FILE_READ worker can misstate what it just observed.  Appending bounded
+    machine-observed tool results keeps the handoff grounded without exposing
+    the worker's entire conversation history.
+    """
+
+    parts = [outcome.content.strip()] if outcome.content.strip() else []
+    evidence = []
+    for result in outcome.tool_results:
+        if not result.ok:
+            continue
+        evidence.append(
+            f"- {result.tool_name}: {_truncate(result.content, 4_000)}"
+        )
+    if evidence:
+        parts.append("Verified tool observations:\n" + "\n".join(evidence))
+    return "\n\n".join(parts)
 
 
 def _notify_observer(

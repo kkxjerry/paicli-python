@@ -444,8 +444,12 @@ Return only one JSON object with this shape:
 Rules:
 - IDs must be unique and dependencies must reference existing IDs.
 - Add a dependency only when a task truly needs another task's result.
-- Keep independent tasks independent so a scheduler can form parallel batches.
-- Use 1-3 tasks for simple work and 5-10 only when complexity requires it.
+- Use the smallest sufficient plan: combine related repository reads and avoid
+  redundant post-verification analysis tasks.
+- Keep truly independent tasks independent so a scheduler can form parallel batches.
+- Every FILE_WRITE task must have a downstream VERIFICATION task that depends
+  on it and performs a deterministic test, diagnostic, or observable check.
+- Prefer 1-3 tasks for simple work and 4-7 only when complexity requires it.
 - Do not include markdown fences or prose outside the JSON object.
 """
 

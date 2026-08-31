@@ -39,7 +39,12 @@ from .llm_client import (
     ToolCall,
     unwrap_llm_client,
 )
-from .managed_memory import ManagedLongTermMemory, MemoryStatus
+from .managed_memory import (
+    ManagedLongTermMemory,
+    ManagedMemoryStore,
+    MemoryKind,
+    MemoryStatus,
+)
 from .memory import ConversationHistoryCompactor, LongTermMemory, MemoryManager
 from .observability import (
     ModelPricing,
@@ -57,6 +62,8 @@ from .orchestration import (
     OrchestrationResult,
     OrchestrationStatus,
     PlanModeRuntime,
+    PlanReviewAction,
+    PlanReviewDecision,
     TaskRunRecord,
     TeamModeRuntime,
 )
@@ -66,8 +73,6 @@ from .planning import (
     LlmPlanner,
     PlanExecuteAgent,
     PlanGenerationError,
-    PlanReviewAction,
-    PlanReviewDecision,
     PlanValidationError,
     PlanValidator,
     StaticPlanner,
@@ -147,6 +152,8 @@ __all__ = [
     "LlmResultAggregator",
     "LongTermMemory",
     "ManagedLongTermMemory",
+    "ManagedMemoryStore",
+    "MemoryKind",
     "MemoryManager",
     "MemoryStatus",
     "ModelPricing",

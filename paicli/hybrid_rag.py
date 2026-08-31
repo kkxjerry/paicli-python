@@ -224,7 +224,10 @@ class HybridCodeIndex:
                 continue
             file_bytes = path.read_bytes()
             file_hash = hashlib.sha256(file_bytes).hexdigest()
-            for chunk in self.chunker.chunk(path, self.root):
+            for chunk in self.chunker.chunk_file(
+                path,
+                relative_path=relative.as_posix(),
+            ):
                 chunk_hash = hashlib.sha256(
                     (
                         chunk.path

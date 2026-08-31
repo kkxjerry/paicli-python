@@ -133,10 +133,37 @@ class TaskPacket:
             ],
             "review_feedback": list(self.review_feedback),
         }
+        contracts = {
+            TaskType.FILE_READ: (
+                "You MUST use a read-only repository tool in this attempt. "
+                "Base the result on the returned observation, not memory or inference."
+            ),
+            TaskType.FILE_WRITE: (
+                "This task packet is explicit authorization to modify only the "
+                "files required by this task. You MUST call a mutation tool such "
+                "as write_file in this attempt; a textual description or claim "
+                "that the file is already correct cannot complete a FILE_WRITE task. "
+                "Inspect the current file first when needed, then perform the write."
+            ),
+            TaskType.COMMAND: (
+                "You MUST call execute_command in this attempt and inspect its "
+                "actual exit status before reporting completion."
+            ),
+            TaskType.VERIFICATION: (
+                "You MUST perform an observable verification with a read or "
+                "process tool and report the concrete result."
+            ),
+            TaskType.ANALYSIS: (
+                "Use repository tools whenever the analysis depends on project "
+                "facts. Prefer raw tool evidence over dependency summaries."
+            ),
+        }
         return (
             "Execute exactly the assigned task packet below. Do not redo "
-            "unrelated plan nodes. Use tools when evidence or a repository "
-            "change is required.\n\n"
+            "unrelated plan nodes.\nExecution contract: "
+            + contracts[self.task_type]
+            + "\nIf a dependency summary conflicts with embedded tool evidence, "
+            "trust the raw tool evidence.\n\n"
             + json.dumps(payload, ensure_ascii=False, indent=2)
         )
 
@@ -297,9 +324,13 @@ class SubAgentFactory:
 You receive one structured task packet, not the whole parent conversation.
 Stay inside that task and its direct dependency evidence. Use only the tools
 exposed to you. A missing tool means the orchestrator intentionally restricted
-this task's side effects. When finished, report concrete actions, evidence,
-changed files, verification performed, and any unresolved limitation. Never
-claim a command, test, or file change that did not occur."""
+this task's side effects. The task packet's execution contract is mandatory:
+FILE_READ requires a real read, FILE_WRITE requires a real mutation call,
+COMMAND requires execute_command, and VERIFICATION requires observable evidence.
+Do not merely describe the tool call you would make, and do not refuse a scoped
+write that the task packet explicitly authorizes. When finished, report concrete
+actions, evidence, changed files, verification performed, and any unresolved
+limitation. Never claim a command, test, or file change that did not occur."""
 
     REVIEWER_SYSTEM_PROMPT = """You are an independent coding-task reviewer.
 Inspect the assigned task, acceptance criteria, worker evidence, tool results,

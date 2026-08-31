@@ -77,16 +77,31 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
 
 @dataclass(frozen=True)
 class MemoryEntry:
-    """一条可持久化的长期记忆；创建后不允许修改。"""
+    """一条可持久化的长期记忆；创建后不允许修改。
+
+    The first three fields preserve the original JSONL constructor.  The
+    remaining optional fields let the SQLite managed-memory implementation
+    expose provenance and lifecycle metadata through the same read interface.
+    """
 
     content: str
     tags: tuple[str, ...] = ()
     created_at: float = 0.0
+    id: str = ""
+    source: str = ""
+    source_hash: str = ""
+    status: str = "active"
+    updated_at: float = 0.0
+    confidence: float = 1.0
+    kind: str = "fact"
+    supersedes_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.created_at:
             # frozen=True 禁止普通赋值，初始化阶段需用 object.__setattr__ 补上时间。
             object.__setattr__(self, "created_at", time.time())
+        if not self.updated_at:
+            object.__setattr__(self, "updated_at", self.created_at)
 
 
 class ConversationMemory:

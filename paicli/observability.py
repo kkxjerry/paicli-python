@@ -38,11 +38,12 @@ _RUN_BUDGET: contextvars.ContextVar[RunBudget | None]
 
 @dataclass(frozen=True)
 class ModelPricing:
-    """CNY per one million tokens; configured, never silently guessed."""
+    """CNY per one million tokens with an auditable source label."""
 
     input_cny_per_million: float
     output_cny_per_million: float
     cached_input_cny_per_million: float = 0.0
+    source: str = "configured"
 
     def __post_init__(self) -> None:
         if min(
@@ -54,16 +55,28 @@ class ModelPricing:
 
     def estimate(
         self,
-        input_tokens: int,
-        output_tokens: int,
+        input_tokens: object,
+        output_tokens: int | None = None,
         cached_input_tokens: int = 0,
     ) -> float:
-        cached = min(max(0, cached_input_tokens), max(0, input_tokens))
-        uncached = max(0, input_tokens) - cached
+        # Accept both explicit integers and the project's TokenUsage contract.
+        if output_tokens is None and hasattr(input_tokens, "input_tokens"):
+            usage = input_tokens
+            raw_input = int(getattr(usage, "input_tokens", 0))
+            raw_output = int(getattr(usage, "output_tokens", 0))
+            raw_cached = int(getattr(usage, "cached_input_tokens", 0))
+        else:
+            raw_input = int(input_tokens)
+            if output_tokens is None:
+                raise TypeError("output_tokens is required when usage is not supplied")
+            raw_output = int(output_tokens)
+            raw_cached = int(cached_input_tokens)
+        cached = min(max(0, raw_cached), max(0, raw_input))
+        uncached = max(0, raw_input) - cached
         return (
             uncached * self.input_cny_per_million
             + cached * self.cached_input_cny_per_million
-            + max(0, output_tokens) * self.output_cny_per_million
+            + max(0, raw_output) * self.output_cny_per_million
         ) / 1_000_000
 
 
@@ -81,20 +94,51 @@ class PricingCatalog:
     zero-cost.
     """
 
+    DEFAULTS: Mapping[tuple[str, str], ModelPricing] = {
+        ("dashscope", "qwen-plus"): ModelPricing(
+            0.8,
+            2.0,
+            0.2,
+            "aliyun-2026-08-30",
+        )
+    }
+
     def __init__(
         self,
-        values: Mapping[tuple[str, str], ModelPricing] | None = None,
+        values: Mapping[object, ModelPricing] | None = None,
     ) -> None:
-        self._values = {
-            (provider.lower(), model.lower()): pricing
-            for (provider, model), pricing in (values or {}).items()
-        }
+        source = self.DEFAULTS if values is None else values
+        normalized: dict[tuple[str, str], ModelPricing] = {}
+        for key, pricing in source.items():
+            if isinstance(key, tuple) and len(key) == 2:
+                provider, model = key
+            else:
+                provider, model = "*", key
+            normalized[(str(provider).lower(), str(model).lower())] = pricing
+        self._values = normalized
 
     def get(self, provider: str, model: str) -> ModelPricing | None:
-        exact = self._values.get((provider.lower(), model.lower()))
-        if exact is not None:
-            return exact
-        return self._values.get((provider.lower(), "*"))
+        provider_key = provider.lower()
+        model_key = model.lower()
+        for key in (
+            (provider_key, model_key),
+            (provider_key, "*"),
+            ("*", model_key),
+            ("*", "*"),
+        ):
+            value = self._values.get(key)
+            if value is not None:
+                return value
+        return None
+
+    def price_for(
+        self,
+        model: str,
+        provider: str = "dashscope",
+    ) -> ModelPricing | None:
+        """Compatibility lookup used by reports and older tests."""
+
+        return self.get(provider, model)
 
     @classmethod
     def from_env(
@@ -234,13 +278,16 @@ class TraceStore:
     def start_run(
         self,
         mode: str,
-        prompt: str,
+        prompt: str | None = None,
         *,
+        goal: str | None = None,
         provider: str = "",
         model: str = "",
         metadata: Mapping[str, object] | None = None,
         run_id: str | None = None,
     ) -> str:
+        if prompt is None:
+            prompt = goal or ""
         value = run_id or ("run_" + uuid.uuid4().hex)
         with self._lock:
             self._connection.execute(
@@ -305,13 +352,21 @@ class TraceStore:
         kind: str,
         name: str,
         *,
-        run_id: str,
-        parent_span_id: str = "",
-        task_id: str = "",
-        agent_role: str = "",
-        agent_name: str = "",
+        run_id: str | None = None,
+        parent_span_id: str | None = None,
+        task_id: str | None = None,
+        agent_role: str | None = None,
+        agent_name: str | None = None,
         attributes: Mapping[str, object] | None = None,
     ) -> str:
+        context = current_trace_context()
+        effective_run_id = run_id or context.run_id
+        if not effective_run_id:
+            raise ValueError("run_id is required outside trace_scope")
+        effective_parent = context.span_id if parent_span_id is None else parent_span_id
+        effective_task = context.task_id if task_id is None else task_id
+        effective_role = context.agent_role if agent_role is None else agent_role
+        effective_name = context.agent_name if agent_name is None else agent_name
         span_id = "span_" + uuid.uuid4().hex
         with self._lock:
             self._connection.execute(
@@ -321,13 +376,13 @@ class TraceStore:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)""",
                 (
                     span_id,
-                    run_id,
-                    parent_span_id,
+                    effective_run_id,
+                    effective_parent,
                     str(kind),
                     str(name),
-                    str(task_id),
-                    str(agent_role),
-                    str(agent_name),
+                    str(effective_task),
+                    str(effective_role),
+                    str(effective_name),
                     time.time(),
                     _json(attributes or {}),
                 ),
@@ -536,6 +591,21 @@ class TraceStore:
 
     summary = run_summary
 
+    def run(self, run_id: str) -> dict[str, object]:
+        """Return persisted run metadata enriched with aggregate counters."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown trace run: {run_id}")
+        result = dict(row)
+        result["metadata"] = json.loads(result.pop("metadata_json") or "{}")
+        result.update(self.run_summary(run_id))
+        return result
+
     def list_runs(self, limit: int = 20) -> list[dict[str, object]]:
         if limit < 1:
             raise ValueError("limit must be positive")
@@ -737,7 +807,14 @@ class RunBudgetExceeded(RuntimeError):
     def __init__(self, reason: str, snapshot: Mapping[str, object]) -> None:
         self.reason = reason
         self.snapshot = dict(snapshot)
-        super().__init__(f"{reason}: {self.snapshot}")
+        label = {
+            "model_call_budget_exceeded": "model-call budget exceeded",
+            "tool_call_budget_exceeded": "tool-call budget exceeded",
+            "token_budget_exceeded": "token budget exceeded",
+            "cost_budget_exceeded": "cost budget exceeded",
+            "time_budget_exceeded": "time budget exceeded",
+        }.get(reason, reason.replace("_", " "))
+        super().__init__(f"{label}: {self.snapshot}")
 
 
 class RunBudget:
@@ -958,6 +1035,7 @@ def traced_span(
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+"),
+    re.compile(r"(?i)(\bbearer\s+)[^\s\"']+"),
     re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,}\"']+"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
 )
@@ -966,7 +1044,10 @@ _SECRET_PATTERNS = (
 def redact_text(value: object) -> str:
     text = str(value or "")
     for pattern in _SECRET_PATTERNS:
-        text = pattern.sub(lambda match: (match.group(1) if match.lastindex else "") + "[REDACTED]", text)
+        text = pattern.sub(
+            lambda match: (match.group(1) if match.lastindex else "") + "***",
+            text,
+        )
     return text
 
 

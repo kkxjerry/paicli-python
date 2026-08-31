@@ -76,7 +76,9 @@ class ApplicationRuntime:
 
     @property
     def client(self) -> LlmClient:
-        return self.react.agent.client
+        """Expose the active provider client, not transparent decorators."""
+
+        return unwrap_llm_client(self.react.agent.client)
 
     def set_client(self, client: LlmClient) -> None:
         wrapped, pricing = _wrap_client(
@@ -215,11 +217,12 @@ def build_application_runtime(
     stagnation_window: int = 3,
     token_budget: int | None = None,
     plan_workers: int = 4,
+    plan_revisions: int = 2,
     team_workers: int = 2,
     review_retries: int = 2,
     on_event: EventHandler | None = None,
-    enable_hitl: bool = False,
-    approval_mode: ApprovalMode | str = ApprovalMode.DENY,
+    enable_hitl: bool | None = None,
+    approval_mode: ApprovalMode | str | None = None,
     approval_handler: ApprovalHandler | None = None,
     audit_path: str | Path | None = None,
     enable_trace: bool = True,
@@ -246,11 +249,12 @@ def build_application_runtime(
 
     registry = ToolRegistry(root, allow_shell=allow_shell)
     gateway: Any = registry
-    if enable_hitl:
+    use_hitl = enable_hitl if enable_hitl is not None else approval_mode is not None
+    if use_hitl:
         mode = (
             approval_mode
             if isinstance(approval_mode, ApprovalMode)
-            else ApprovalMode(str(approval_mode).lower())
+            else ApprovalMode(str(approval_mode or ApprovalMode.DENY.value).lower())
         )
         handler = approval_handler or ConsoleApprovalHandler(mode)
         gateway = HitlToolRegistry(
@@ -292,6 +296,7 @@ def build_application_runtime(
         LlmPlanner(wrapped_client),
         subagents,
         max_workers=plan_workers,
+        max_plan_revisions=plan_revisions,
         on_event=on_event,
     )
     team = TeamModeRuntime(
