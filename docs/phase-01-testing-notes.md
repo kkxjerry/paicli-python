@@ -1,5 +1,7 @@
 # Phase01 测试笔记
 
+> **历史阶段快照**：本文记录 Phase 01 提交时的测试范围，不代表当前 `develop`。当前 1.0 测试和验收以 `README.md`、`.github/workflows/ci.yml` 和 `docs/final-acceptance.md` 为准。
+
 ## 1. 测试解决什么问题
 
 测试不是自动知道什么结果正确，而是由开发者明确规定：

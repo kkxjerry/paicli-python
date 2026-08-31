@@ -142,7 +142,10 @@ class ObservabilityTest(unittest.TestCase):
     def test_pricing_catalog_uses_versioned_default(self) -> None:
         price = PricingCatalog().price_for("qwen-plus")
         self.assertIsNotNone(price)
-        self.assertEqual("aliyun-2026-08-30", price.source)  # type: ignore[union-attr]
+        self.assertEqual(
+            "aliyun-qwen-plus-beijing-le128k-2026-08-31",
+            price.source,  # type: ignore[union-attr]
+        )
         self.assertGreater(
             price.estimate(TokenUsage(1_000_000, 1_000_000, 0)),  # type: ignore[union-attr]
             0,

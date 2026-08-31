@@ -677,9 +677,9 @@ def register_memory_tool(
             raise ValueError("memory content cannot be empty")
         # JSON 数组在内部转为不可变 tuple，与 MemoryEntry.tags 的类型一致。
         tags = tuple(str(tag) for tag in arguments.get("tags", []))
-        save_record = getattr(long_term, "save_record", None)
-        if callable(save_record):
-            save_record(
+        save_agent_memory = getattr(long_term, "save_agent_memory", None)
+        if callable(save_agent_memory):
+            save_agent_memory(
                 content,
                 tags=tags,
                 kind=str(arguments.get("kind", "fact")),
@@ -689,7 +689,19 @@ def register_memory_tool(
                 supersedes_id=str(arguments.get("supersedes_id", "")),
             )
         else:
-            long_term.save(content, tags)
+            save_record = getattr(long_term, "save_record", None)
+            if callable(save_record):
+                save_record(
+                    content,
+                    tags=tags,
+                    kind=str(arguments.get("kind", "fact")),
+                    source=str(arguments.get("source", "")),
+                    source_hash=str(arguments.get("source_hash", "")),
+                    confidence=float(arguments.get("confidence", 1.0)),
+                    supersedes_id=str(arguments.get("supersedes_id", "")),
+                )
+            else:
+                long_term.save(content, tags)
         return "Memory saved."
 
     # ToolSpec 会同时被用于：告诉模型工具定义，以及把调用路由到 save_memory。

@@ -1,11 +1,9 @@
 """Versioned SQLite long-term memory with provenance and conflict controls.
 
-Two public adapters share one schema:
-
-``ManagedLongTermMemory`` keeps the Phase-14 unverified/verified workflow used
-by :class:`paicli.memory.MemoryManager`, while ``ManagedMemoryStore`` exposes a
-richer active/superseded record API used by the final harness.  Keeping both
-names avoids forcing old callers to migrate in lockstep.
+``ManagedMemoryStore`` is the canonical 1.0 API. The older
+``ManagedLongTermMemory`` name remains as a compatibility adapter for Phase-14
+callers that rely on the unverified/verified write workflow. Both use the same
+schema and retrieval implementation.
 """
 
 from __future__ import annotations
@@ -361,13 +359,42 @@ class ManagedMemoryStore(ManagedLongTermMemory):
             self._set_status(supersedes_id, MemoryStatus.SUPERSEDED)
         return self.get(record.id)
 
+    def save_agent_memory(
+        self,
+        content: str,
+        tags: tuple[str, ...] = (),
+        *,
+        kind: MemoryKind | str = MemoryKind.FACT,
+        confidence: float = 1.0,
+        source: str = "",
+        source_hash: str = "",
+        supersedes_id: str = "",
+    ) -> MemoryEntry:
+        """Persist model-authored memory as unverified until promoted."""
+
+        if source and source_hash:
+            self.mark_stale(source, source_hash)
+        record = self._upsert(
+            content,
+            tags,
+            source=source,
+            source_hash=source_hash,
+            status=MemoryStatus.UNVERIFIED,
+            confidence=confidence,
+            kind=MemoryKind(kind),
+            supersedes_id=supersedes_id,
+        )
+        if supersedes_id and supersedes_id != record.id:
+            self._set_status(supersedes_id, MemoryStatus.SUPERSEDED)
+        return self.get(record.id)
+
     def save(
         self,
         content: str,
         tags: tuple[str, ...] = (),
         **kwargs: object,
     ) -> MemoryEntry:
-        return self.save_record(
+        return self.save_agent_memory(
             content,
             tags,
             kind=MemoryKind(str(kwargs.get("kind", MemoryKind.FACT.value))),

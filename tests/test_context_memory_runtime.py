@@ -6,9 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from paicli.bootstrap import build_react_runtime
+from paicli.bootstrap import build_application_runtime, build_react_runtime
 from paicli.context import ContextController, ContextSettings
 from paicli.llm_client import ChatResponse
+from paicli.managed_memory import ManagedMemoryStore, MemoryStatus
 from paicli.memory import (
     ConversationHistoryCompactor,
     LongTermMemory,
@@ -266,6 +267,61 @@ class ContextMemoryRuntimeTest(unittest.TestCase):
             )
             self.assertTrue(result.ok)
             self.assertEqual(1, len(runtime.long_term_memory.entries()))  # type: ignore[union-attr]
+
+    def test_application_runtime_wires_persistent_rag_and_managed_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "service.py"
+            source.write_text(
+                "def old_symbol() -> str:\n    return 'old'\n",
+                encoding="utf-8",
+            )
+            runtime = build_application_runtime(
+                SummaryClient(),
+                root,
+                enable_trace=False,
+                memory_path=root / "memory.db",
+                rag_path=root / ".paicli" / "code-index.db",
+            )
+            try:
+                self.assertIn("search_code", runtime.tools.names())
+                self.assertIn("save_memory", runtime.tools.names())
+                self.assertIsInstance(
+                    runtime.react.long_term_memory,
+                    ManagedMemoryStore,
+                )
+                before = runtime.tools.execute_result(
+                    "search_code",
+                    '{"query":"old_symbol","top_k":1}',
+                )
+                self.assertTrue(before.ok)
+                self.assertIn("old_symbol", before.content)
+
+                write = runtime.tools.execute_result(
+                    "write_file",
+                    '{"path":"service.py","content":"def new_symbol() -> str:\\n    return \'new\'\\n"}',
+                )
+                self.assertTrue(write.ok)
+                after = runtime.tools.execute_result(
+                    "search_code",
+                    '{"query":"new_symbol","top_k":1}',
+                )
+                self.assertTrue(after.ok)
+                self.assertIn("new_symbol", after.content)
+
+                saved = runtime.tools.execute_result(
+                    "save_memory",
+                    '{"content":"The service now uses new_symbol","tags":["code"]}',
+                )
+                self.assertTrue(saved.ok)
+                memory = runtime.react.long_term_memory
+                self.assertEqual(1, len(memory.entries()))  # type: ignore[union-attr]
+                self.assertEqual(
+                    MemoryStatus.UNVERIFIED,
+                    memory.entries()[0].status,  # type: ignore[union-attr]
+                )
+            finally:
+                runtime.close()
 
     def test_bootstrap_can_explicitly_disable_memory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

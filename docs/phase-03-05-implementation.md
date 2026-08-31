@@ -1,5 +1,7 @@
 # Java parity implementation notes — Phases 3, 4, and 5
 
+> **Historical phase snapshot.** This file records the Phase 3–5 migration state. It is not the current `develop` contract; use `README.md`, `ARCHITECTURE.md`, and `docs/final-acceptance.md` for the 1.0 implementation.
+
 Date: 2026-08-30
 Python base commit: `880fc1b`
 Java behavior reference: local `paicli-java` develop inspected during Phase 0

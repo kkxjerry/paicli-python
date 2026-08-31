@@ -1,5 +1,7 @@
 # Phase 03 学习笔记：Memory 与上下文压缩
 
+> **历史阶段快照**：本文记录 Phase 03 提交时的能力，不代表当前 `develop`。当前 1.0 的 Context 与 Managed Memory 以 `README.md`、`ARCHITECTURE.md` 和 `docs/final-acceptance.md` 为准。
+
 ## 先分清期数
 
 - Phase 01：ReAct 与工具调用。

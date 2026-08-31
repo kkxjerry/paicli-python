@@ -162,6 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-snapshot", action="store_true")
     parser.add_argument("--memory-file", type=Path)
     parser.add_argument("--no-memory", action="store_true")
+    parser.add_argument("--rag-path", type=Path)
+    parser.add_argument("--no-rag", action="store_true")
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--trace-path", type=Path)
     parser.add_argument("--audit-path", type=Path)
@@ -219,6 +221,8 @@ def main() -> int:
             allow_shell=args.allow_shell or env_flag("PAICLI_ALLOW_SHELL"),
             enable_memory=not args.no_memory,
             memory_path=args.memory_file,
+            enable_rag=not args.no_rag,
+            rag_path=args.rag_path,
             max_steps=args.max_steps,
             subagent_max_steps=args.subagent_max_steps,
             stagnation_window=args.stagnation_window,

@@ -12,6 +12,7 @@ from .agent import Agent
 from .context import ContextController, ContextSettings
 from .llm_client import LlmClient, RetryingLlmClient, unwrap_llm_client
 from .lsp import LspManager
+from .managed_memory import ManagedMemoryStore
 from .memory import (
     ConversationHistoryCompactor,
     LongTermMemory,
@@ -26,6 +27,7 @@ from .observability import (
 )
 from .orchestration import PlanModeRuntime, TeamModeRuntime
 from .planning import LlmPlanner
+from .rag import CodeIndex, IndexRefreshingToolGateway
 from .policy import (
     ApprovalHandler,
     ApprovalMode,
@@ -45,7 +47,8 @@ class ReactRuntime:
     tools: Any
     context: ContextController
     memory: MemoryManager | None
-    long_term_memory: LongTermMemory | None
+    long_term_memory: Any | None
+    code_index: CodeIndex | None = None
 
     @property
     def settings(self) -> ContextSettings:
@@ -133,8 +136,19 @@ class ApplicationRuntime:
             )
 
     def close(self) -> None:
-        if self.trace_store is not None:
-            self.trace_store.close()
+        resources = (
+            self.react.code_index,
+            self.react.long_term_memory,
+            self.trace_store,
+        )
+        closed: set[int] = set()
+        for resource in resources:
+            if resource is None or id(resource) in closed:
+                continue
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+            closed.add(id(resource))
 
 
 def default_memory_path() -> Path:
@@ -142,7 +156,16 @@ def default_memory_path() -> Path:
     return (
         Path(configured).expanduser()
         if configured
-        else Path.home() / ".paicli" / "memory.jsonl"
+        else Path.home() / ".paicli" / "memory.db"
+    )
+
+
+def default_rag_path(project_root: str | Path) -> Path:
+    configured = os.getenv("PAICLI_RAG_FILE", "").strip()
+    return (
+        Path(configured).expanduser()
+        if configured
+        else Path(project_root).resolve() / ".paicli" / "code-index.db"
     )
 
 
@@ -162,6 +185,9 @@ def build_react_runtime(
     allow_shell: bool = False,
     enable_memory: bool = True,
     memory_path: str | Path | None = None,
+    enable_rag: bool = False,
+    rag_path: str | Path | None = None,
+    code_index: CodeIndex | None = None,
     max_steps: int = 50,
     stagnation_window: int = 3,
     token_budget: int | None = None,
@@ -173,12 +199,27 @@ def build_react_runtime(
     root = Path(project_root).resolve()
     settings = _settings_for(client)
     runtime_tools = tools or ToolRegistry(root, allow_shell=allow_shell)
+    registry = _find_registry(runtime_tools)
+
+    active_index = code_index
+    if active_index is None and enable_rag:
+        active_index = CodeIndex(
+            root,
+            rag_path or default_rag_path(root),
+        )
+        active_index.build()
+    if active_index is not None:
+        active_index.register_tool(registry)
 
     memory: MemoryManager | None = None
-    long_term: LongTermMemory | None = None
+    long_term: Any | None = None
     if enable_memory:
         resolved = Path(memory_path or default_memory_path()).expanduser()
-        long_term = LongTermMemory(resolved)
+        long_term = (
+            LongTermMemory(resolved)
+            if resolved.suffix.lower() == ".jsonl"
+            else ManagedMemoryStore(resolved)
+        )
         memory = MemoryManager(
             max_tokens=settings.compression_trigger_tokens,
             long_term=long_term,
@@ -186,7 +227,6 @@ def build_react_runtime(
             long_term_context_tokens=settings.memory_context_tokens,
         )
         # Register against the innermost registry, not a policy/trace decorator.
-        registry = _find_registry(runtime_tools)
         if "save_memory" not in registry.names():
             register_memory_tool(registry, long_term)
 
@@ -202,7 +242,14 @@ def build_react_runtime(
         context=context,
         lsp=LspManager(root),
     )
-    return ReactRuntime(agent, runtime_tools, context, memory, long_term)
+    return ReactRuntime(
+        agent,
+        runtime_tools,
+        context,
+        memory,
+        long_term,
+        active_index,
+    )
 
 
 def build_application_runtime(
@@ -212,6 +259,8 @@ def build_application_runtime(
     allow_shell: bool = False,
     enable_memory: bool = True,
     memory_path: str | Path | None = None,
+    enable_rag: bool = True,
+    rag_path: str | Path | None = None,
     max_steps: int = 50,
     subagent_max_steps: int = 12,
     stagnation_window: int = 3,
@@ -248,6 +297,12 @@ def build_application_runtime(
     )
 
     registry = ToolRegistry(root, allow_shell=allow_shell)
+    code_index: CodeIndex | None = None
+    if enable_rag:
+        code_index = CodeIndex(root, rag_path or default_rag_path(root))
+        code_index.build()
+        code_index.register_tool(registry)
+
     gateway: Any = registry
     use_hitl = enable_hitl if enable_hitl is not None else approval_mode is not None
     if use_hitl:
@@ -267,6 +322,8 @@ def build_application_runtime(
                 else root / ".paicli" / "audit"
             ),
         )
+    if code_index is not None:
+        gateway = IndexRefreshingToolGateway(gateway, code_index)
     gateway = ObservedToolGateway(gateway, trace_store)
 
     react = build_react_runtime(
@@ -275,6 +332,9 @@ def build_application_runtime(
         allow_shell=allow_shell,
         enable_memory=enable_memory,
         memory_path=memory_path,
+        enable_rag=enable_rag,
+        rag_path=rag_path,
+        code_index=code_index,
         max_steps=max_steps,
         stagnation_window=stagnation_window,
         token_budget=token_budget,
@@ -378,5 +438,6 @@ __all__ = [
     "build_application_runtime",
     "build_react_runtime",
     "default_memory_path",
+    "default_rag_path",
     "default_trace_path",
 ]

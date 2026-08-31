@@ -1,5 +1,7 @@
 # Phase01 学习笔记：ReAct 与工具调用
 
+> **历史阶段快照**：本文记录 Phase 01 提交时的实现边界，不代表当前 `develop`。当前 1.0 行为以 `README.md`、`ARCHITECTURE.md` 和 `docs/final-acceptance.md` 为准。
+
 ## 1. 本期目标
 
 Phase01 只解决一个核心问题：

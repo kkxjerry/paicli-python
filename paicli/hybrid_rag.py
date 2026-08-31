@@ -1,6 +1,14 @@
-"""Persistent lexical + embedding code retrieval with source evidence."""
+"""Deprecated compatibility implementation of hybrid code retrieval.
+
+New integrations should use :class:`paicli.rag.CodeIndex`, which is the
+canonical 1.0 implementation wired into the CLI. This module remains through
+the 1.x line for callers of ``HybridCodeIndex`` and its deterministic hash
+embedding test utility.
+"""
 
 from __future__ import annotations
+
+__deprecated__ = True
 
 import hashlib
 import json

@@ -43,6 +43,27 @@ The command exits zero only when every Task and deterministic assertion passes.
 Real model variance means a single run is not a statistical estimate. Use
 multiple reports for reliability analysis.
 
+## Run a historical Git revision
+
+Use the same suite against an exported revision without creating another Git
+worktree:
+
+```bash
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --revision 2107eab \
+  --repository . \
+  --output reports/phase5-dashscope-baseline.json
+```
+
+The evaluator uses `git archive`, starts that revision's own CLI in a subprocess,
+and records its real capabilities. A revision that predates `--mode plan` or
+`--mode team` receives explicit failed cases for those modes; current code is
+never used to impersonate a missing historical feature. Historical revisions
+may not expose Trace/Token metrics, so those report fields remain zero rather
+than being guessed.
+
 ## Assertions
 
 Supported deterministic assertions:
@@ -122,6 +143,24 @@ unchanged_or_mixed
 
 The comparison also identifies individual Tasks whose success changed.
 
+## Aggregate repeated runs
+
+After running the same suite several times, preserve every report and aggregate
+them without hiding failed attempts:
+
+```bash
+paicli-eval stability \
+  reports/dashscope-1.0-run-01.json \
+  reports/dashscope-1.0-run-02.json \
+  reports/dashscope-1.0-run-03.json \
+  --output reports/dashscope-1.0-stability.json
+```
+
+The stability report contains full-run success rate, per-task success rate,
+assertion pass rate, failed run IDs/errors, and distributions for duration,
+Token usage, model calls, and tool calls. Reports must use the same suite
+version, provider, model, and ordered task set.
+
 ## Interpreting results
 
 A failure should be assigned to a layer before changing Prompts:
@@ -156,6 +195,8 @@ remain independent gates.
 
 - Keep prompts, initial files, assertions, and suite version under Git.
 - Record exact Git commit and model identifier.
+- Use `--revision` for a historical baseline; do not synthesize old results from
+  the current implementation.
 - Do not silently edit an existing suite version; increment it.
 - Keep provider retries and parent budgets fixed when comparing versions.
 - Use disposable workspaces.

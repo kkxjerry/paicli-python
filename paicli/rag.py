@@ -18,12 +18,17 @@ import threading
 import urllib.error
 import urllib.request
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Protocol, Sequence
 
-from .tool_contracts import ConcurrencyPolicy, ToolRisk, ToolSideEffect
-from .tools import ToolRegistry, ToolSpec
+from .tool_contracts import (
+    ConcurrencyPolicy,
+    ToolResult,
+    ToolRisk,
+    ToolSideEffect,
+)
+from .tools import ToolGateway, ToolRegistry, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -690,6 +695,107 @@ class CodeIndex:
         ]
 
 
+class IndexRefreshingToolGateway:
+    """Keep the canonical code index synchronized after repository mutations."""
+
+    def __init__(self, gateway: ToolGateway, index: CodeIndex) -> None:
+        self.gateway = gateway
+        self.index = index
+        self.last_refresh_error = ""
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return self.gateway.definitions()
+
+    def names(self) -> list[str]:
+        return self.gateway.names()
+
+    def spec(self, name: str) -> ToolSpec | None:
+        return self.gateway.spec(name)
+
+    def validate_arguments(self, name: str, arguments_json: str) -> dict[str, Any]:
+        validator = getattr(self.gateway, "validate_arguments", None)
+        if not callable(validator):
+            raise AttributeError("wrapped tool gateway does not validate arguments")
+        return validator(name, arguments_json)
+
+    def execute(self, name: str, arguments_json: str) -> str:
+        return self.execute_result(name, arguments_json).content
+
+    def execute_result(
+        self,
+        name: str,
+        arguments_json: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ToolResult:
+        if timeout_seconds is None:
+            result = self.gateway.execute_result(name, arguments_json)
+        else:
+            result = self.gateway.execute_many_results(
+                [(name, arguments_json)],
+                timeout_seconds=timeout_seconds,
+            )[0]
+        return self._refresh_after((result,))[0]
+
+    def execute_many(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[str]:
+        return [
+            result.content
+            for result in self.execute_many_results(
+                calls,
+                timeout_seconds=timeout_seconds,
+            )
+        ]
+
+    def execute_many_results(
+        self,
+        calls: list[tuple[str, str]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[ToolResult]:
+        results = self.gateway.execute_many_results(
+            calls,
+            timeout_seconds=timeout_seconds,
+        )
+        return list(self._refresh_after(tuple(results)))
+
+    def _refresh_after(
+        self,
+        results: tuple[ToolResult, ...],
+    ) -> tuple[ToolResult, ...]:
+        mutated = [
+            index
+            for index, result in enumerate(results)
+            if result.ok and result.changed_files
+        ]
+        if not mutated:
+            return results
+        try:
+            self.index.build()
+        except Exception as exc:
+            self.last_refresh_error = f"{type(exc).__name__}: {exc}"
+            target = mutated[-1]
+            values = list(results)
+            values[target] = replace(
+                values[target],
+                content=(
+                    values[target].content
+                    + "\nCode index refresh warning: "
+                    + self.last_refresh_error
+                ),
+            )
+            return tuple(values)
+        self.last_refresh_error = ""
+        return results
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.gateway, name)
+
+
 def _chunk(row: sqlite3.Row) -> CodeChunk:
     return CodeChunk(
         str(row["path"]),
@@ -743,6 +849,7 @@ __all__ = [
     "CodeChunker",
     "CodeIndex",
     "EmbeddingClient",
+    "IndexRefreshingToolGateway",
     "OpenAICompatibleEmbeddingClient",
     "SearchResult",
     "VectorStore",

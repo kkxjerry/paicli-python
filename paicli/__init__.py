@@ -1,5 +1,7 @@
 """PaiCLI Python — a local coding-agent harness with three execution modes."""
 
+from importlib import import_module
+
 from .agent import Agent, AgentLoopError
 from .agents import (
     AgentBudget,
@@ -19,14 +21,7 @@ from .bootstrap import (
     ReactRuntime,
     build_application_runtime,
     build_react_runtime,
-)
-from .evaluation import (
-    EvalSuite,
-    EvalTask,
-    EvaluationReport,
-    EvaluationRunner,
-    compare_reports,
-    load_suite,
+    default_rag_path,
 )
 from .execution import CoordinatedRun, RunCoordinator
 from .llm_client import (
@@ -86,6 +81,7 @@ from .rag import (
     CodeChunker,
     CodeIndex,
     EmbeddingClient,
+    IndexRefreshingToolGateway,
     OpenAICompatibleEmbeddingClient,
     SearchResult,
     VectorStore,
@@ -117,6 +113,39 @@ from .tools import (
 
 __version__ = "1.0.0"
 
+_LAZY_EXPORTS = {
+    "EvalSuite": (".evaluation", "EvalSuite"),
+    "EvalTask": (".evaluation", "EvalTask"),
+    "EvaluationReport": (".evaluation", "EvaluationReport"),
+    "EvaluationRunner": (".evaluation", "EvaluationRunner"),
+    "GitRevisionCaseExecutor": (".evaluation", "GitRevisionCaseExecutor"),
+    "compare_reports": (".evaluation", "compare_reports"),
+    "load_suite": (".evaluation", "load_suite"),
+    "summarize_stability": (".evaluation", "summarize_stability"),
+}
+
+
+def __getattr__(name: str):
+    """Load optional command modules only when a public symbol is requested.
+
+    Keeping ``paicli.evaluation`` out of package initialization lets
+    ``python -m paicli.evaluation`` execute without runpy's double-import
+    warning while preserving the original package-level API.
+    """
+
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = target
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
 __all__ = [
     "Agent",
     "AgentBudget",
@@ -144,7 +173,9 @@ __all__ = [
     "EvaluationReport",
     "EvaluationRunner",
     "ExecutionPlan",
+    "GitRevisionCaseExecutor",
     "FinishReason",
+    "IndexRefreshingToolGateway",
     "LlmClient",
     "LlmClientFactory",
     "LlmError",
@@ -218,7 +249,9 @@ __all__ = [
     "build_application_runtime",
     "build_react_runtime",
     "compare_reports",
+    "default_rag_path",
     "load_suite",
+    "summarize_stability",
     "unwrap_llm_client",
     "__version__",
 ]

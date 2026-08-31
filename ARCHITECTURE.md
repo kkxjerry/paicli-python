@@ -178,12 +178,18 @@ exact/partial symbol rank
 ```
 
 Results contain source text, file path, symbol, and exact line span. Dense
-embeddings are optional so a fresh install remains dependency-free.
+embeddings are optional so a fresh install remains dependency-free. The
+canonical product API is `paicli.rag.CodeIndex`; `build_application_runtime()`
+builds it before exposing tools, and `IndexRefreshingToolGateway` incrementally
+rebuilds it after successful file mutations. `paicli.hybrid_rag` is retained as
+a 1.x compatibility module only.
 
-Long-term memory is separate from code retrieval. Managed memory records an ID,
-source, source hash, verification state, and lifecycle status. A source version
-change can mark dependent memories stale; stale/deleted memories are excluded
-from normal retrieval.
+Long-term memory is separate from code retrieval. The canonical API is
+`ManagedMemoryStore`, which records an ID, kind, confidence, source, source hash,
+verification state, and lifecycle status. Model-authored memories are written as
+`unverified`; a source version change can mark dependent memories stale, and
+stale/deleted/superseded memories are excluded from normal retrieval.
+`ManagedLongTermMemory` remains a compatibility adapter for older callers.
 
 ## Extension points
 

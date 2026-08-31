@@ -98,8 +98,8 @@ class PricingCatalog:
         ("dashscope", "qwen-plus"): ModelPricing(
             0.8,
             2.0,
-            0.2,
-            "aliyun-2026-08-30",
+            0.0,
+            "aliyun-qwen-plus-beijing-le128k-2026-08-31",
         )
     }
 

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import os
-import shlex
-import shutil
+import statistics
 import subprocess
+import sys
+import tarfile
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Protocol
 
 from .bootstrap import build_application_runtime
@@ -168,6 +171,7 @@ class EvaluationReport:
 class CaseExecutor(Protocol):
     provider: str
     model: str
+    git_commit: str
 
     def execute(self, task: EvalTask, workspace: Path) -> CaseExecution:
         ...
@@ -186,6 +190,7 @@ class AgentCaseExecutor:
     ) -> None:
         self.provider = provider
         self.environ = dict(os.environ if environ is None else environ)
+        self.git_commit = _git_commit()
         probe = LlmClientFactory.create(provider, environ=self.environ)
         self.model = str(probe.model)
         self.max_model_calls = max_model_calls
@@ -238,6 +243,175 @@ class AgentCaseExecutor:
             coordinator.close()
 
 
+class GitRevisionCaseExecutor:
+    """Execute a suite against an exported historical Git revision.
+
+    The revision is materialized with ``git archive`` rather than a worktree, so
+    benchmark runs cannot mutate the developer checkout or violate the single-
+    worktree project policy. Older revisions that predate Plan/Team are recorded
+    as real capability failures instead of being simulated by current code.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        revision: str,
+        *,
+        repository_root: str | Path | None = None,
+        environ: Mapping[str, str] | None = None,
+        python_executable: str | None = None,
+        max_model_calls: int = 80,
+        max_tool_calls: int = 120,
+    ) -> None:
+        self.provider = provider.strip().lower()
+        self.environ = dict(os.environ if environ is None else environ)
+        self.repository_root = _repository_root(repository_root)
+        self.git_commit = _resolve_revision(self.repository_root, revision)
+        self.revision = revision
+        self.python_executable = python_executable or sys.executable
+        self.max_model_calls = max_model_calls
+        self.max_tool_calls = max_tool_calls
+        self._source_directory = tempfile.TemporaryDirectory(
+            prefix="paicli-revision-source-"
+        )
+        self.source_root = Path(self._source_directory.name)
+        _export_revision(self.repository_root, self.git_commit, self.source_root)
+        self._environment = _revision_environment(
+            self.environ,
+            self.source_root,
+            self.provider,
+        )
+        help_result = self._run_source(["--help"], timeout_seconds=30)
+        if help_result.returncode != 0:
+            self.close()
+            detail = _bounded_text(
+                help_result.stdout + "\n" + help_result.stderr,
+                4_000,
+            )
+            raise RuntimeError(
+                f"revision {self.git_commit[:12]} cannot start PaiCLI: {detail}"
+            )
+        self.help_text = help_result.stdout + "\n" + help_result.stderr
+        self.supported_modes = (
+            ("react", "plan", "team")
+            if "--mode" in self.help_text
+            else ("react",)
+        )
+        self._provider_flag = self.provider in self.help_text
+        self.model = _configured_model(self.provider, self.environ)
+
+    def execute(self, task: EvalTask, workspace: Path) -> CaseExecution:
+        if task.mode not in self.supported_modes:
+            return CaseExecution(
+                run_id="",
+                status="failed",
+                answer="",
+                error=(
+                    f"revision {self.git_commit[:12]} does not expose "
+                    f"the {task.mode!r} execution mode"
+                ),
+                changed_files=(),
+                metrics=_revision_metrics(exit_code=2),
+            )
+
+        before = _workspace_fingerprints(workspace)
+        arguments = [
+            "--project-root",
+            str(workspace),
+            "--prompt",
+            task.prompt,
+        ]
+        if self._provider_flag:
+            arguments.extend(["--provider", self.provider])
+        if "--mode" in self.help_text:
+            arguments.extend(["--mode", task.mode])
+        if "--renderer" in self.help_text:
+            arguments.extend(["--renderer", "plain"])
+        if "--allow-shell" in self.help_text:
+            arguments.append("--allow-shell")
+        if "--approval-mode" in self.help_text:
+            arguments.extend(["--approval-mode", "allow"])
+        if "--rollback-on-failure" in self.help_text:
+            arguments.extend(["--rollback-on-failure", "never"])
+        if "--no-snapshot" in self.help_text:
+            arguments.append("--no-snapshot")
+        if "--no-memory" in self.help_text:
+            arguments.append("--no-memory")
+        if "--no-trace" in self.help_text:
+            arguments.append("--no-trace")
+        if "--max-run-seconds" in self.help_text:
+            arguments.extend(["--max-run-seconds", str(task.max_run_seconds)])
+        if "--max-model-calls" in self.help_text:
+            arguments.extend(["--max-model-calls", str(self.max_model_calls)])
+        if "--max-tool-calls" in self.help_text:
+            arguments.extend(["--max-tool-calls", str(self.max_tool_calls)])
+
+        try:
+            completed = self._run_source(
+                arguments,
+                timeout_seconds=max(60.0, task.max_run_seconds + 30.0),
+            )
+        except subprocess.TimeoutExpired as exc:
+            after = _workspace_fingerprints(workspace)
+            return CaseExecution(
+                run_id="",
+                status="failed",
+                answer=_bounded_text(exc.stdout or "", 12_000),
+                error=(
+                    f"revision subprocess exceeded {task.max_run_seconds:.0f}s: "
+                    + _bounded_text(exc.stderr or "", 4_000)
+                ),
+                changed_files=_changed_workspace_files(before, after),
+                metrics=_revision_metrics(exit_code=124),
+            )
+
+        after = _workspace_fingerprints(workspace)
+        output = _bounded_text(completed.stdout, 12_000)
+        status = "succeeded" if completed.returncode == 0 else "failed"
+        error = ""
+        if completed.returncode != 0:
+            error = _bounded_text(
+                completed.stderr + "\n" + completed.stdout,
+                8_000,
+            )
+        return CaseExecution(
+            run_id="",
+            status=status,
+            answer=output,
+            error=error,
+            changed_files=_changed_workspace_files(before, after),
+            metrics=_revision_metrics(exit_code=completed.returncode),
+        )
+
+    def close(self) -> None:
+        directory = getattr(self, "_source_directory", None)
+        if directory is not None:
+            directory.cleanup()
+            self._source_directory = None  # type: ignore[assignment]
+
+    def __enter__(self) -> GitRevisionCaseExecutor:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _run_source(
+        self,
+        arguments: list[str],
+        *,
+        timeout_seconds: float,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [self.python_executable, "-m", "paicli", *arguments],
+            cwd=self.source_root,
+            env=self._environment,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+
+
 class EvaluationRunner:
     def __init__(
         self,
@@ -261,7 +435,7 @@ class EvaluationRunner:
             suite_name=suite.name,
             suite_version=suite.version,
             created_at=time.time(),
-            git_commit=_git_commit(),
+            git_commit=str(getattr(self.executor, "git_commit", _git_commit())),
             provider=self.executor.provider,
             model=self.executor.model,
             cases=tuple(results),
@@ -420,6 +594,188 @@ def compare_reports(
     }
 
 
+def summarize_stability(
+    reports: list[EvaluationReport] | tuple[EvaluationReport, ...],
+) -> dict[str, object]:
+    """Aggregate repeated real-model runs without hiding individual failures."""
+
+    if not reports:
+        raise ValueError("at least one evaluation report is required")
+    first = reports[0]
+    expected_cases = tuple(case.task_id for case in first.cases)
+    for report in reports[1:]:
+        if (
+            report.suite_name != first.suite_name
+            or report.suite_version != first.suite_version
+            or report.provider != first.provider
+            or report.model != first.model
+        ):
+            raise ValueError(
+                "stability reports must use the same suite, provider, and model"
+            )
+        if tuple(case.task_id for case in report.cases) != expected_cases:
+            raise ValueError("stability reports must contain the same ordered cases")
+
+    case_summaries: dict[str, object] = {}
+    for task_id in expected_cases:
+        attempts = [
+            next(case for case in report.cases if case.task_id == task_id)
+            for report in reports
+        ]
+        assertions = [item for case in attempts for item in case.assertions]
+        durations = [case.duration_ms for case in attempts]
+        case_summaries[task_id] = {
+            "mode": attempts[0].mode,
+            "attempts": len(attempts),
+            "successes": sum(case.success for case in attempts),
+            "success_rate": sum(case.success for case in attempts) / len(attempts),
+            "assertions": len(assertions),
+            "assertions_passed": sum(item.passed for item in assertions),
+            "assertion_pass_rate": (
+                sum(item.passed for item in assertions) / len(assertions)
+                if assertions
+                else 0.0
+            ),
+            "duration_ms": _distribution(durations),
+            "input_tokens": _distribution(
+                [int(case.metrics.get("input_tokens", 0) or 0) for case in attempts]
+            ),
+            "output_tokens": _distribution(
+                [int(case.metrics.get("output_tokens", 0) or 0) for case in attempts]
+            ),
+            "model_calls": _distribution(
+                [int(case.metrics.get("model_calls", 0) or 0) for case in attempts]
+            ),
+            "tool_calls": _distribution(
+                [int(case.metrics.get("tool_calls", 0) or 0) for case in attempts]
+            ),
+            "statuses": {
+                status: sum(case.run_status == status for case in attempts)
+                for status in sorted({case.run_status for case in attempts})
+            },
+            "failed_runs": [
+                {
+                    "run_id": case.run_id,
+                    "status": case.run_status,
+                    "error": _bounded_text(case.error, 2_000),
+                }
+                for case in attempts
+                if not case.success
+            ],
+        }
+
+    total_cases = sum(len(report.cases) for report in reports)
+    successful_cases = sum(
+        case.success for report in reports for case in report.cases
+    )
+    fully_successful_runs = sum(
+        bool(report.cases) and all(case.success for case in report.cases)
+        for report in reports
+    )
+    assertion_results = [
+        assertion
+        for report in reports
+        for case in report.cases
+        for assertion in case.assertions
+    ]
+    return {
+        "schema_version": 1,
+        "kind": "stability",
+        "created_at": time.time(),
+        "suite_name": first.suite_name,
+        "suite_version": first.suite_version,
+        "provider": first.provider,
+        "model": first.model,
+        "git_commits": sorted({report.git_commit for report in reports}),
+        "runs": [
+            {
+                "git_commit": report.git_commit,
+                "created_at": report.created_at,
+                "success_rate": report.metrics.get("success_rate", 0.0),
+                "assertion_pass_rate": report.metrics.get(
+                    "assertion_pass_rate",
+                    0.0,
+                ),
+                "average_duration_ms": report.metrics.get(
+                    "average_duration_ms",
+                    0.0,
+                ),
+                "input_tokens": report.metrics.get("input_tokens", 0),
+                "output_tokens": report.metrics.get("output_tokens", 0),
+                "model_calls": report.metrics.get("model_calls", 0),
+                "tool_calls": report.metrics.get("tool_calls", 0),
+                "estimated_cost_cny": report.metrics.get(
+                    "estimated_cost_cny",
+                    0.0,
+                ),
+            }
+            for report in reports
+        ],
+        "metrics": {
+            "run_count": len(reports),
+            "fully_successful_runs": fully_successful_runs,
+            "run_success_rate": fully_successful_runs / len(reports),
+            "task_attempts": total_cases,
+            "tasks_succeeded": successful_cases,
+            "task_success_rate": (
+                successful_cases / total_cases if total_cases else 0.0
+            ),
+            "assertions": len(assertion_results),
+            "assertions_passed": sum(item.passed for item in assertion_results),
+            "assertion_pass_rate": (
+                sum(item.passed for item in assertion_results)
+                / len(assertion_results)
+                if assertion_results
+                else 0.0
+            ),
+            "total_input_tokens": sum(
+                int(report.metrics.get("input_tokens", 0) or 0)
+                for report in reports
+            ),
+            "total_output_tokens": sum(
+                int(report.metrics.get("output_tokens", 0) or 0)
+                for report in reports
+            ),
+            "total_model_calls": sum(
+                int(report.metrics.get("model_calls", 0) or 0)
+                for report in reports
+            ),
+            "total_tool_calls": sum(
+                int(report.metrics.get("tool_calls", 0) or 0)
+                for report in reports
+            ),
+            "total_model_errors": sum(
+                int(report.metrics.get("model_errors", 0) or 0)
+                for report in reports
+            ),
+            "total_tool_errors": sum(
+                int(report.metrics.get("tool_errors", 0) or 0)
+                for report in reports
+            ),
+            "total_estimated_cost_cny": sum(
+                float(report.metrics.get("estimated_cost_cny", 0.0) or 0.0)
+                for report in reports
+            ),
+            "unpriced_model_calls": sum(
+                int(report.metrics.get("unpriced_model_calls", 0) or 0)
+                for report in reports
+            ),
+        },
+        "cases": case_summaries,
+    }
+
+
+def _distribution(values: list[int] | tuple[int, ...]) -> dict[str, float | int]:
+    if not values:
+        return {"min": 0, "max": 0, "mean": 0.0, "median": 0.0}
+    return {
+        "min": min(values),
+        "max": max(values),
+        "mean": statistics.fmean(values),
+        "median": statistics.median(values),
+    }
+
+
 def _seed_files(root: Path, files: Mapping[str, str]) -> None:
     for raw_path, content in files.items():
         path = (root / raw_path).resolve()
@@ -537,6 +893,160 @@ def _changed_files(result: CoordinatedRun) -> tuple[str, ...]:
     return ()
 
 
+def _repository_root(value: str | Path | None) -> Path:
+    candidate = Path(value or Path.cwd()).expanduser().resolve()
+    try:
+        root = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"not a readable Git repository: {candidate}") from exc
+    return Path(root).resolve()
+
+
+def _resolve_revision(repository: Path, revision: str) -> str:
+    normalized = str(revision).strip()
+    if not normalized:
+        raise ValueError("revision cannot be empty")
+    try:
+        return subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "rev-parse",
+                "--verify",
+                normalized + "^{commit}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"unknown Git revision: {revision}") from exc
+
+
+def _export_revision(repository: Path, revision: str, destination: Path) -> None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), "archive", "--format=tar", revision],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"failed to export revision {revision[:12]}") from exc
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise RuntimeError(f"unsafe path in Git archive: {member.name}")
+            if member.issym() or member.islnk():
+                raise RuntimeError(
+                    f"symlinks are not allowed in evaluation exports: {member.name}"
+                )
+            target = destination.joinpath(*path.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise RuntimeError(
+                    f"unsupported entry in evaluation export: {member.name}"
+                )
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise RuntimeError(f"cannot read Git archive entry: {member.name}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(stream.read())
+            target.chmod(member.mode & 0o777)
+
+
+def _revision_environment(
+    source: Mapping[str, str],
+    source_root: Path,
+    provider: str,
+) -> dict[str, str]:
+    environment = dict(source)
+    existing_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = str(source_root) + (
+        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+    )
+    prefix = provider.upper()
+    aliases = {
+        "PAICLI_API_KEY": f"{prefix}_API_KEY",
+        "PAICLI_MODEL": f"{prefix}_MODEL",
+        "PAICLI_BASE_URL": f"{prefix}_BASE_URL",
+    }
+    for target, source_name in aliases.items():
+        value = environment.get(source_name, "").strip()
+        if value:
+            environment[target] = value
+    return environment
+
+
+def _configured_model(provider: str, environment: Mapping[str, str]) -> str:
+    return environment.get(f"{provider.upper()}_MODEL", "").strip() or provider
+
+
+def _workspace_fingerprints(root: Path) -> dict[str, str]:
+    ignored = {".git", ".paicli", ".pytest_cache", "__pycache__"}
+    result: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if ignored.intersection(relative.parts):
+            continue
+        name = relative.as_posix()
+        try:
+            if path.is_symlink():
+                result[name] = "symlink:" + os.readlink(path)
+            elif path.is_file():
+                result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            result[name] = "unreadable"
+    return result
+
+
+def _changed_workspace_files(
+    before: Mapping[str, str],
+    after: Mapping[str, str],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            path
+            for path in set(before) | set(after)
+            if before.get(path) != after.get(path)
+        )
+    )
+
+
+def _revision_metrics(*, exit_code: int) -> dict[str, object]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "model_calls": 0,
+        "tool_calls": 0,
+        "model_errors": 0,
+        "tool_errors": 0,
+        "estimated_cost_cny": 0.0,
+        "unpriced_model_calls": 0,
+        "revision_subprocess": True,
+        "exit_code": int(exit_code),
+    }
+
+
+def _bounded_text(value: str | bytes, limit: int) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value or "")
+    return text if len(text) <= limit else text[-limit:]
+
+
 def _git_commit() -> str:
     try:
         return subprocess.run(
@@ -548,6 +1058,18 @@ def _git_commit() -> str:
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def _write_json(path: str | Path, payload: Mapping[str, object]) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+    return target
 
 
 def _load_env(path: Path = Path(".env")) -> None:
@@ -570,10 +1092,26 @@ def build_cli() -> argparse.ArgumentParser:
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--keep-workspaces", action="store_true")
     run.add_argument("--workspace-parent", type=Path)
+    run.add_argument(
+        "--revision",
+        help="Run the suite against an exported historical Git revision",
+    )
+    run.add_argument(
+        "--repository",
+        type=Path,
+        default=Path.cwd(),
+        help="Git repository containing --revision (defaults to current repo)",
+    )
     compare = subparsers.add_parser("compare", help="Compare two reports")
     compare.add_argument("baseline", type=Path)
     compare.add_argument("candidate", type=Path)
     compare.add_argument("--output", type=Path)
+    stability = subparsers.add_parser(
+        "stability",
+        help="Aggregate repeated reports for the same suite/provider/model",
+    )
+    stability.add_argument("reports", type=Path, nargs="+")
+    stability.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -582,25 +1120,44 @@ def main(argv: list[str] | None = None) -> int:
     args = build_cli().parse_args(argv)
     if args.command == "run":
         suite = load_suite(args.suite)
-        executor = AgentCaseExecutor(args.provider)
-        report = EvaluationRunner(
-            executor,
-            keep_workspaces=args.keep_workspaces,
-            workspace_parent=args.workspace_parent,
-        ).run(suite)
+        revision_executor: GitRevisionCaseExecutor | None = None
+        try:
+            if args.revision:
+                revision_executor = GitRevisionCaseExecutor(
+                    args.provider,
+                    args.revision,
+                    repository_root=args.repository,
+                )
+                executor: CaseExecutor = revision_executor
+            else:
+                executor = AgentCaseExecutor(args.provider)
+            report = EvaluationRunner(
+                executor,
+                keep_workspaces=args.keep_workspaces,
+                workspace_parent=args.workspace_parent,
+            ).run(suite)
+        finally:
+            if revision_executor is not None:
+                revision_executor.close()
         report.save(args.output)
         print(json.dumps(report.metrics, ensure_ascii=False, indent=2))
         print(f"report={args.output}")
         return 0 if float(report.metrics["success_rate"]) == 1.0 else 1
-    baseline = EvaluationReport.load(args.baseline)
-    candidate = EvaluationReport.load(args.candidate)
-    comparison = compare_reports(baseline, candidate)
-    rendered = json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True)
-    print(rendered)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
-    return 1 if comparison["verdict"] == "regressed" else 0
+    if args.command == "compare":
+        baseline = EvaluationReport.load(args.baseline)
+        candidate = EvaluationReport.load(args.candidate)
+        comparison = compare_reports(baseline, candidate)
+        rendered = json.dumps(comparison, ensure_ascii=False, indent=2, sort_keys=True)
+        print(rendered)
+        if args.output:
+            _write_json(args.output, comparison)
+        return 1 if comparison["verdict"] == "regressed" else 0
+    reports = [EvaluationReport.load(path) for path in args.reports]
+    stability = summarize_stability(reports)
+    _write_json(args.output, stability)
+    print(json.dumps(stability["metrics"], ensure_ascii=False, indent=2))
+    print(f"report={args.output}")
+    return 0 if float(stability["metrics"]["run_success_rate"]) == 1.0 else 1
 
 
 if __name__ == "__main__":
@@ -618,6 +1175,8 @@ __all__ = [
     "EvalTask",
     "EvaluationReport",
     "EvaluationRunner",
+    "GitRevisionCaseExecutor",
     "compare_reports",
     "load_suite",
+    "summarize_stability",
 ]

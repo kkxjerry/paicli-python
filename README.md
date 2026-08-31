@@ -258,9 +258,11 @@ Aggregator:
 --max-tool-calls 100
 ```
 
-Token usage comes from the provider response. Prices change over time, so
-PaiCLI does not hard-code a price table. Configure verified prices for the
-exact provider/model:
+Token usage comes from the provider response. PaiCLI includes one versioned
+baseline for DashScope `qwen-plus` in Beijing with requests up to 128K input
+Tokens: CNY 0.8/M input and CNY 2.0/M non-thinking output. The model currently
+does not use context-cache accounting in PaiCLI. Configure overrides whenever
+the model, region, input tier, thinking mode, or provider price differs:
 
 ```dotenv
 PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_INPUT_CNY_PER_MILLION=
@@ -268,20 +270,25 @@ PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_OUTPUT_CNY_PER_MILLION=
 PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_CACHED_CNY_PER_MILLION=0
 ```
 
-When prices are absent, reports show `unpriced_model_calls` instead of falsely
-reporting zero cost.
+Models without an exact configured or versioned price remain visible as
+`unpriced_model_calls` instead of being falsely reported as zero cost.
 
 ## Code retrieval and memory
 
-The production CLI builds `.paicli/code-index.db` by default and exposes
-`search_code`. Results contain the file, exact line range, symbol, retrieval
-channels, and source text. Disable it with `--no-rag` or choose a path with
-`--rag-path`.
+The production CLI builds `.paicli/code-index.db` through the canonical
+`paicli.rag.CodeIndex` and exposes `search_code`. Results contain the file,
+exact line range, symbol, retrieval channels, and source text. Successful file
+mutations trigger an incremental index refresh. Disable it with `--no-rag` or
+choose a path with `--rag-path`. `paicli.hybrid_rag.HybridCodeIndex` remains a
+1.x compatibility API but is not the product assembly path.
 
-The default long-term memory is `~/.paicli/memory.db`; choose another path with
-`--memory-file`. Explicit `.jsonl` paths keep the original educational
-append-only implementation. SQLite memory adds deduplication, verification,
-source hashes, stale marking, and soft deletion. Disable memory with
+The canonical SQLite API is `ManagedMemoryStore`. The default long-term memory
+is `~/.paicli/memory.db`; choose another path with `--memory-file`. Model-authored
+writes enter as `unverified` until explicitly promoted. Explicit `.jsonl` paths
+keep the original educational append-only implementation, and
+`ManagedLongTermMemory` remains a 1.x compatibility adapter. SQLite memory adds
+deduplication, provenance, confidence, verification, source hashes, stale and
+superseded states, conflict resolution, and soft deletion. Disable memory with
 `--no-memory`.
 
 ## Fixed-task evaluation
@@ -295,18 +302,37 @@ paicli-eval run \
   --output reports/dashscope-current.json
 ```
 
-Compare a baseline and candidate:
+Run the same suite against a real historical commit without creating another
+worktree:
+
+```bash
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --revision 2107eab \
+  --repository . \
+  --output reports/phase5-dashscope-baseline.json
+```
+
+Compare baseline and candidate, then aggregate repeated candidate runs:
 
 ```bash
 paicli-eval compare \
-  reports/baseline.json \
+  reports/phase5-dashscope-baseline.json \
   reports/dashscope-current.json \
-  --output reports/comparison.json
+  --output reports/phase5-vs-1.0.json
+
+paicli-eval stability \
+  reports/dashscope-1.0-run-01.json \
+  reports/dashscope-1.0-run-02.json \
+  reports/dashscope-current.json \
+  --output reports/dashscope-1.0-stability.json
 ```
 
 A report includes task/assertion success, Git commit, model, model/tool errors,
-Token usage, latency, configured cost, and changed files. See
-[docs/evaluation.md](docs/evaluation.md).
+Token usage, latency, configured cost, and changed files. Historical modes that
+do not exist fail explicitly rather than being simulated by current code. See
+[docs/evaluation.md](docs/evaluation.md) and [reports/README.md](reports/README.md).
 
 ## Real-provider tests
 
@@ -335,6 +361,8 @@ code operations consume credentials and may create billable API calls.
 - [docs/evaluation.md](docs/evaluation.md)
 - [docs/phase-09-dashscope-live.md](docs/phase-09-dashscope-live.md)
 - [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
+- [docs/final-acceptance.md](docs/final-acceptance.md)
+- [reports/README.md](reports/README.md)
 - [docs/java-parity.md](docs/java-parity.md)
 - [PHASES.md](PHASES.md)
 

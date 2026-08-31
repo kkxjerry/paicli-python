@@ -27,7 +27,7 @@ from .agents.models import (
 from .context import ContextController, ContextSettings
 from .llm_client import ChatResponse, LlmClient
 from .lsp import LspManager
-from .memory import ConversationHistoryCompactor, LongTermMemory, MemoryManager
+from .memory import ConversationHistoryCompactor, MemoryManager
 from .observability import TraceStore, current_trace_context, traced_span
 from .planning import ExecutionPlan, Task, TaskType
 from .runtime import CancellationToken
@@ -350,7 +350,7 @@ Return a concise user-facing answer without tool calls."""
         tools: ToolGateway,
         project_root: str | Path,
         *,
-        long_term_memory: LongTermMemory | None = None,
+        long_term_memory: Any | None = None,
         enable_memory: bool = True,
         max_steps: int = 12,
         stagnation_window: int = 3,

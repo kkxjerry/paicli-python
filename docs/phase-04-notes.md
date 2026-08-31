@@ -1,5 +1,7 @@
 # Phase 04 学习笔记：RAG 与代码检索
 
+> **历史阶段快照**：本文记录 Phase 04 提交时的能力，不代表当前 `develop`。当前 1.0 的持久化混合 Code RAG 以 `README.md`、`ARCHITECTURE.md` 和 `docs/final-acceptance.md` 为准。
+
 ## 这一期解决什么
 
 Agent 不可能每次都把整个项目的代码发给模型。Phase 04 先建立代码索引，模型需要某段代码时再调用 `search_code`。
