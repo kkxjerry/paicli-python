@@ -250,6 +250,33 @@ class EvaluationTest(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
 
+    def test_repository_release_evidence_is_internally_consistent(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        baseline = EvaluationReport.load(
+            root / "reports" / "phase5-dashscope-baseline.json"
+        )
+        current = EvaluationReport.load(root / "reports" / "dashscope-current.json")
+        stability = json.loads(
+            (root / "reports" / "dashscope-1.0-stability.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        comparison = json.loads(
+            (root / "reports" / "phase5-vs-1.0.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertTrue(baseline.git_commit.startswith("2107eab"))
+        self.assertEqual(1, baseline.metrics["tasks_succeeded"])
+        self.assertEqual(3, current.metrics["tasks_succeeded"])
+        self.assertEqual("improved", comparison["verdict"])
+        self.assertEqual(5, stability["metrics"]["run_count"])
+        self.assertEqual(4, stability["metrics"]["fully_successful_runs"])
+        self.assertEqual(14, stability["metrics"]["tasks_succeeded"])
+        self.assertEqual(34, stability["metrics"]["assertions_passed"])
+        self.assertEqual(1, len(stability["cases"]["team-fix-division"]["failed_runs"]))
+
     def test_command_assertion_uses_argv_without_shell(self) -> None:
         suite = EvalSuite(
             "command",

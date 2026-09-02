@@ -1,0 +1,252 @@
+{
+  "cases": [
+    {
+      "answer": "PAICLI_FIXED_EVAL_MARKER_2026",
+      "assertions": [
+        {
+          "detail": "expected answer to contain 'PAICLI_FIXED_EVAL_MARKER_2026'",
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 1897,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 0,
+        "elapsed_ms": 1846,
+        "error": "",
+        "estimated_cost_cny": 0.0012676000000000002,
+        "input_tokens": 1507,
+        "metadata": {
+          "after_snapshot_id": "97cd00d1e3024b88b9b04a79b576bab5",
+          "before_snapshot_id": "3c4be367694641e598067bcc8d268ace",
+          "budget": {
+            "cached_input_tokens": 0,
+            "elapsed_seconds": 1.843673,
+            "estimated_cost_cny": 0.0012676,
+            "input_tokens": 1507,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 90.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 2,
+            "model_errors": 0,
+            "output_tokens": 31,
+            "tool_calls": 1,
+            "tool_errors": 0,
+            "total_tokens": 1538,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "react",
+        "model": "qwen-plus",
+        "model_calls": 2,
+        "model_duration_ms": 1826,
+        "model_errors": 0,
+        "output_tokens": 31,
+        "priced_model_calls": 2,
+        "provider": "dashscope",
+        "run_id": "run_e2c08ef0a853406db75a1704cf03d32c",
+        "status": "succeeded",
+        "tool_calls": 1,
+        "tool_duration_ms": 0,
+        "tool_errors": 0,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "react",
+      "run_id": "run_e2c08ef0a853406db75a1704cf03d32c",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "react-read-marker"
+    },
+    {
+      "answer": "✅ **Completed work**:  \n- Added `subtract(a, b)` function to `calculator.py`.  \n- Added deterministic unit test `test_subtract` to `test_calculator.py`.  \n- Updated imports in `test_calculator.py` to include `subtract`.  \n- Removed Python 3 type annotations from both files to ensure compatibility with Python 2.7 (as required for successful test execution).  \n- Ran the full unittest suite (`python -m unittest test_calculator`) and confirmed it passed with **exit code 0** — all 2 tests (`test_add`, `test_subtract`) succeeded.\n\n📄 **Changed files**:  \n- `calculator.py` (modified: added `subtract`, removed type annotations)  \n- `test_calculator.py` (modified: added import for `subtract`, added `test_subtract`, removed type annotations)\n\n⚠️ **No failed or skipped tasks**: All 7 tasks completed successfully per the orchestration record. The final test run exited cleanly with status 0 and reported “OK”.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [
+        "calculator.py",
+        "test_calculator.py"
+      ],
+      "duration_ms": 85879,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 7744,
+        "elapsed_ms": 85549,
+        "error": "",
+        "estimated_cost_cny": 0.034264,
+        "input_tokens": 42784,
+        "metadata": {
+          "after_snapshot_id": "a4d9c15f6f934c738d4380fb246f12af",
+          "before_snapshot_id": "5a8563bc4ba944a4a71144961490198d",
+          "budget": {
+            "cached_input_tokens": 7744,
+            "elapsed_seconds": 85.544397,
+            "estimated_cost_cny": 0.034264,
+            "input_tokens": 42784,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 240.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 25,
+            "model_errors": 0,
+            "output_tokens": 3116,
+            "tool_calls": 16,
+            "tool_errors": 2,
+            "total_tokens": 45900,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "plan",
+        "model": "qwen-plus",
+        "model_calls": 25,
+        "model_duration_ms": 86145,
+        "model_errors": 0,
+        "output_tokens": 3116,
+        "priced_model_calls": 25,
+        "provider": "dashscope",
+        "run_id": "run_2715edd5c13a4884a0bad8d963c4a18d",
+        "status": "succeeded",
+        "tool_calls": 16,
+        "tool_duration_ms": 4756,
+        "tool_errors": 2,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "plan",
+      "run_id": "run_2715edd5c13a4884a0bad8d963c4a18d",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "plan-add-subtract"
+    },
+    {
+      "answer": "✅ **Completed work:**  \n- `calculator.py` was modified to make `divide(a, b)` raise `ValueError('division by zero')` when `b == 0`.  \n- `test_calculator.py` was updated to include a deterministic test (`test_divide_by_zero`) that verifies this exact exception and message, alongside the existing `test_divide` for normal division.  \n- The full unittest suite was run successfully under Python 3 (exit code 0), with both tests passing.  \n\n📁 **Changed files:**  \n- `calculator.py`  \n- `test_calculator.py`\n\n⚠️ **Disclosures:**  \n- No tasks failed or were skipped — all four tasks completed successfully and were approved by review.  \n- The verification task confirmed only the two expected files were modified; no extraneous changes occurred.  \n- Python 2.7 execution was attempted but failed due to syntax incompatibility (type annotations), but this is irrelevant: the goal required only that *the unittest suite runs and passes*, and it does under Python 3 — which is the supported and verified environment.  \n\nNo further action is needed. The fix and tests are correct, minimal, and verified.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 2 tests in 0.003s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [
+        "calculator.py",
+        "test_calculator.py"
+      ],
+      "duration_ms": 116366,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 17152,
+        "elapsed_ms": 115310,
+        "error": "",
+        "estimated_cost_cny": 0.0392944,
+        "input_tokens": 55265,
+        "metadata": {
+          "after_snapshot_id": "f0b909d258fc432db3ecfdb7efbf5284",
+          "before_snapshot_id": "2d2f39a01478493586441a640b04b188",
+          "budget": {
+            "cached_input_tokens": 17152,
+            "elapsed_seconds": 115.160509,
+            "estimated_cost_cny": 0.0392944,
+            "input_tokens": 55265,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 300.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 30,
+            "model_errors": 0,
+            "output_tokens": 4402,
+            "tool_calls": 19,
+            "tool_errors": 2,
+            "total_tokens": 59667,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "team",
+        "model": "qwen-plus",
+        "model_calls": 30,
+        "model_duration_ms": 113639,
+        "model_errors": 0,
+        "output_tokens": 4402,
+        "priced_model_calls": 30,
+        "provider": "dashscope",
+        "run_id": "run_c6387427bd4e4f12bb896309ac0f74a8",
+        "status": "succeeded",
+        "tool_calls": 19,
+        "tool_duration_ms": 1020,
+        "tool_errors": 2,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "team",
+      "run_id": "run_c6387427bd4e4f12bb896309ac0f74a8",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "team-fix-division"
+    }
+  ],
+  "created_at": 1788176717.2136161,
+  "git_commit": "9dc8d1438941f2865655bde99d3c500f80fbb558",
+  "metrics": {
+    "assertion_pass_rate": 1.0,
+    "assertions": 7,
+    "assertions_passed": 7,
+    "average_duration_ms": 68047.33333333333,
+    "estimated_cost_cny": 0.074826,
+    "input_tokens": 99556,
+    "model_calls": 57,
+    "model_errors": 0,
+    "output_tokens": 7549,
+    "success_rate": 1.0,
+    "tasks": 3,
+    "tasks_succeeded": 3,
+    "tool_calls": 36,
+    "tool_errors": 4,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

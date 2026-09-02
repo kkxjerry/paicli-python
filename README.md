@@ -331,8 +331,13 @@ paicli-eval stability \
 
 A report includes task/assertion success, Git commit, model, model/tool errors,
 Token usage, latency, configured cost, and changed files. Historical modes that
-do not exist fail explicitly rather than being simulated by current code. See
-[docs/evaluation.md](docs/evaluation.md) and [reports/README.md](reports/README.md).
+do not exist fail explicitly rather than being simulated by current code.
+
+The committed five-run DashScope sample records 4/5 fully successful suites,
+14/15 successful Tasks, and 34/35 passing deterministic assertions. The failed
+Team run is retained because its final verification caught a real cross-Task
+contract mismatch. See [docs/evaluation.md](docs/evaluation.md) and
+[reports/README.md](reports/README.md).
 
 ## Real-provider tests
 
@@ -384,9 +389,12 @@ The final release is gated by these checks:
 [x] model/tool calls have parent-child traces
 [x] Token, configured cost, latency, and errors are reported
 [x] fixed task reports compare baseline and candidate behavior
-[x] a fresh clone can reproduce installation, tests, and live probes
+[x] repeated real-model reports preserve success and failure variance
+[x] fresh Python 3.11/3.12 environments reproduce installation and CLI entry points
 ```
 
-The release checklist is marked complete only after normal tests, real
-DashScope tests, the fixed suite, a clean `develop`, and fresh-install smoke
-checks all pass.
+Detailed commands, exact metrics, the preserved Team bad case, and explicit
+scope boundaries are recorded in
+[docs/final-acceptance.md](docs/final-acceptance.md). The `v1.0.0` product-code
+tag points at the evaluated commit; the evidence report set was committed
+immediately afterward without rewriting that historical tag.

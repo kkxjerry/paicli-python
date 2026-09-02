@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "answer": "[tool] read_file {\"path\": \"marker.txt\"}\n[result] PAICLI_FIXED_EVAL_MARKER_2026\n\nPAICLI_FIXED_EVAL_MARKER_2026\n",
+      "assertions": [
+        {
+          "detail": "expected answer to contain 'PAICLI_FIXED_EVAL_MARKER_2026'",
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 2048,
+      "error": "",
+      "metrics": {
+        "estimated_cost_cny": 0.0,
+        "exit_code": 0,
+        "input_tokens": 0,
+        "model_calls": 0,
+        "model_errors": 0,
+        "output_tokens": 0,
+        "revision_subprocess": true,
+        "tool_calls": 0,
+        "tool_errors": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "react",
+      "run_id": "",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "react-read-marker"
+    },
+    {
+      "answer": "",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 575,
+      "error": "revision 2107eab87c6e does not expose the 'plan' execution mode",
+      "metrics": {
+        "estimated_cost_cny": 0.0,
+        "exit_code": 2,
+        "input_tokens": 0,
+        "model_calls": 0,
+        "model_errors": 0,
+        "output_tokens": 0,
+        "revision_subprocess": true,
+        "tool_calls": 0,
+        "tool_errors": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "plan",
+      "run_id": "",
+      "run_status": "failed",
+      "success": false,
+      "task_id": "plan-add-subtract"
+    },
+    {
+      "answer": "",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 339,
+      "error": "revision 2107eab87c6e does not expose the 'team' execution mode",
+      "metrics": {
+        "estimated_cost_cny": 0.0,
+        "exit_code": 2,
+        "input_tokens": 0,
+        "model_calls": 0,
+        "model_errors": 0,
+        "output_tokens": 0,
+        "revision_subprocess": true,
+        "tool_calls": 0,
+        "tool_errors": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "team",
+      "run_id": "",
+      "run_status": "failed",
+      "success": false,
+      "task_id": "team-fix-division"
+    }
+  ],
+  "created_at": 1788176502.956345,
+  "git_commit": "2107eab87c6e4a7b498c0aab88b9b333c9ab7ef5",
+  "metrics": {
+    "assertion_pass_rate": 0.42857142857142855,
+    "assertions": 7,
+    "assertions_passed": 3,
+    "average_duration_ms": 987.3333333333334,
+    "estimated_cost_cny": 0.0,
+    "input_tokens": 0,
+    "model_calls": 0,
+    "model_errors": 0,
+    "output_tokens": 0,
+    "success_rate": 0.3333333333333333,
+    "tasks": 3,
+    "tasks_succeeded": 1,
+    "tool_calls": 0,
+    "tool_errors": 0,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

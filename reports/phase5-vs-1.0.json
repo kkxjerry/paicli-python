@@ -1,0 +1,34 @@
+{
+  "baseline_commit": "2107eab87c6e4a7b498c0aab88b9b333c9ab7ef5",
+  "candidate_commit": "9dc8d1438941f2865655bde99d3c500f80fbb558",
+  "case_success_changes": {
+    "plan-add-subtract": {
+      "baseline": false,
+      "candidate": true
+    },
+    "team-fix-division": {
+      "baseline": false,
+      "candidate": true
+    }
+  },
+  "metric_deltas": {
+    "assertion_pass_rate": 0.5714285714285714,
+    "assertions": 0.0,
+    "assertions_passed": 4.0,
+    "average_duration_ms": 67060.0,
+    "estimated_cost_cny": 0.074826,
+    "input_tokens": 99556.0,
+    "model_calls": 57.0,
+    "model_errors": 0.0,
+    "output_tokens": 7549.0,
+    "success_rate": 0.6666666666666667,
+    "tasks": 0.0,
+    "tasks_succeeded": 2.0,
+    "tool_calls": 36.0,
+    "tool_errors": 4.0,
+    "unpriced_model_calls": 0.0
+  },
+  "suite": "paicli-coding-smoke",
+  "verdict": "improved",
+  "version": "1.0"
+}

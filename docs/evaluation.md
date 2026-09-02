@@ -150,7 +150,7 @@ them without hiding failed attempts:
 
 ```bash
 paicli-eval stability \
-  reports/dashscope-1.0-run-01.json \
+  reports/dashscope-current.json \
   reports/dashscope-1.0-run-02.json \
   reports/dashscope-1.0-run-03.json \
   --output reports/dashscope-1.0-stability.json
