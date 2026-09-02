@@ -14,6 +14,7 @@ from .agents.loop import AgentLoopEngine, ToolRuntime
 from .agents.models import (
     AgentOutcome,
     CompletionPolicy,
+    DiagnosticsCompletionPolicy,
     NonEmptyCompletionPolicy,
     RunStatus,
 )
@@ -77,7 +78,12 @@ class Agent:
         self.cancellation = cancellation or CancellationToken()
         self.context = context
         self.lsp = lsp
-        self.completion_policy = completion_policy or NonEmptyCompletionPolicy()
+        base_completion = completion_policy or NonEmptyCompletionPolicy()
+        self.completion_policy = (
+            base_completion
+            if isinstance(base_completion, DiagnosticsCompletionPolicy)
+            else DiagnosticsCompletionPolicy(base_completion)
+        )
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
         ]

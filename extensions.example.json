@@ -1,0 +1,34 @@
+{
+  "skills": {
+    "roots": [
+      ".paicli/skills",
+      "~/.paicli/skills"
+    ]
+  },
+  "mcp": {
+    "servers": [
+      {
+        "name": "filesystem-demo",
+        "transport": "stdio",
+        "command": ["python3", "path/to/mcp_server.py"],
+        "timeout_seconds": 30
+      },
+      {
+        "name": "internal-http",
+        "transport": "http",
+        "url": "https://mcp.example.com/rpc",
+        "headers": {
+          "Authorization": "Bearer replace-me-from-a-private-config"
+        },
+        "timeout_seconds": 30
+      }
+    ]
+  },
+  "web": {
+    "enabled": false,
+    "allowed_hosts": ["docs.example.com"],
+    "search_endpoint": "https://docs.example.com/search",
+    "max_response_bytes": 1000000,
+    "timeout_seconds": 20
+  }
+}

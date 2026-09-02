@@ -171,6 +171,7 @@ class RunCoordinator:
         state_store: RunStateStore | None = None,
         snapshot_service: SnapshotService | None = None,
         enable_snapshots: bool = True,
+        snapshot_retention: int = 80,
         limits: RunLimits | None = None,
         rollback_policy: RollbackPolicy | str = RollbackPolicy.ALWAYS,
         rollback_handler: RollbackDecision | None = None,
@@ -185,6 +186,9 @@ class RunCoordinator:
             if enable_snapshots
             else None
         )
+        if snapshot_retention < 0:
+            raise ValueError("snapshot_retention cannot be negative")
+        self.snapshot_retention = snapshot_retention
         self.limits = limits or RunLimits()
         self.rollback_policy = (
             rollback_policy
@@ -331,6 +335,8 @@ class RunCoordinator:
                         if agent_outcome.succeeded
                         else StoredRunStatus.CANCELLED
                         if agent_outcome.status is RunStatus.CANCELLED
+                        else StoredRunStatus.STOPPED
+                        if agent_outcome.status is RunStatus.STOPPED
                         else StoredRunStatus.FAILED
                     )
                     error = agent_outcome.error
@@ -370,6 +376,10 @@ class RunCoordinator:
             status = StoredRunStatus.FAILED
 
         rolled_back = False
+        # Budget/stagnation exits are STOPPED rather than FAILED.  They retain
+        # the workspace and remain resumable with a larger budget instead of
+        # silently undoing useful work merely because the model failed to emit
+        # an accepted final answer in time.
         if status in {StoredRunStatus.FAILED, StoredRunStatus.PARTIAL}:
             rolled_back = self._rollback_if_requested(before_snapshot_id)
             if rolled_back:
@@ -415,6 +425,13 @@ class RunCoordinator:
                 "resumed": resumed,
             },
         )
+        if self.snapshots is not None:
+            protected = self.state_store.resumable_snapshot_ids()
+            protected.update({before_snapshot_id, after_id})
+            self.snapshots.prune(
+                keep_ids=protected,
+                keep_last=self.snapshot_retention,
+            )
         return CoordinatedRun(
             run_id=run_id,
             mode=mode,

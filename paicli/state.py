@@ -29,11 +29,12 @@ class StoredRunStatus:
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
+    STOPPED = "stopped"
     FAILED = "failed"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
 
-    TERMINAL = {SUCCEEDED, PARTIAL, FAILED, CANCELLED}
+    TERMINAL = {SUCCEEDED, PARTIAL, STOPPED, FAILED, CANCELLED}
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class StoredRun:
     def resumable(self) -> bool:
         return self.status in {
             StoredRunStatus.INTERRUPTED,
+            StoredRunStatus.STOPPED,
             StoredRunStatus.FAILED,
             StoredRunStatus.PARTIAL,
         }
@@ -233,6 +235,7 @@ class RunStateStore:
         if status not in {
             StoredRunStatus.SUCCEEDED,
             StoredRunStatus.PARTIAL,
+            StoredRunStatus.STOPPED,
             StoredRunStatus.FAILED,
             StoredRunStatus.CANCELLED,
             StoredRunStatus.INTERRUPTED,
@@ -316,13 +319,46 @@ class RunStateStore:
             ).fetchall()
         return [_stored_run(row) for row in rows]
 
+    def referenced_snapshot_ids(self) -> set[str]:
+        """Return snapshot IDs still referenced by durable run state."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT before_snapshot_id, after_snapshot_id,
+                          current_task_snapshot_id FROM runs"""
+            ).fetchall()
+        values: set[str] = set()
+        for row in rows:
+            for column in (
+                "before_snapshot_id",
+                "after_snapshot_id",
+                "current_task_snapshot_id",
+            ):
+                value = str(row[column] or "")
+                if value:
+                    values.add(value)
+        return values
+
+    def resumable_snapshot_ids(self) -> set[str]:
+        values: set[str] = set()
+        for run in self.resumable_runs():
+            for value in (
+                run.before_snapshot_id,
+                run.after_snapshot_id,
+                run.current_task_snapshot_id,
+            ):
+                if value:
+                    values.add(value)
+        return values
+
     def resumable_runs(self) -> list[StoredRun]:
         with self._lock:
             rows = self._connection.execute(
-                """SELECT * FROM runs WHERE status IN (?, ?, ?)
+                """SELECT * FROM runs WHERE status IN (?, ?, ?, ?)
                    ORDER BY updated_at DESC""",
                 (
                     StoredRunStatus.INTERRUPTED,
+                    StoredRunStatus.STOPPED,
                     StoredRunStatus.FAILED,
                     StoredRunStatus.PARTIAL,
                 ),

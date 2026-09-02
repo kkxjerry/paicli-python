@@ -142,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(LlmClientFactory.PROVIDERS),
         help="Configured cloud provider or OpenAI-compatible vLLM",
     )
+    for role in ("planner", "worker", "reviewer", "aggregator"):
+        parser.add_argument(
+            f"--{role}-provider",
+            choices=sorted(LlmClientFactory.PROVIDERS),
+            help=f"Optional provider override for the {role} role",
+        )
     parser.add_argument(
         "--renderer",
         choices=("plain", "inline"),
@@ -157,16 +163,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rollback-on-failure",
         choices=tuple(item.value for item in RollbackPolicy),
-        default=RollbackPolicy.ALWAYS.value,
+        default=RollbackPolicy.ASK.value,
+        help="ASK before restoring failed runs, ALWAYS restore, or NEVER restore",
     )
     parser.add_argument("--no-snapshot", action="store_true")
+    parser.add_argument(
+        "--snapshot-retention",
+        type=non_negative_int,
+        default=80,
+        help="Keep at least this many recent snapshots in addition to resumable runs",
+    )
     parser.add_argument("--memory-file", type=Path)
     parser.add_argument("--no-memory", action="store_true")
     parser.add_argument("--rag-path", type=Path)
     parser.add_argument("--no-rag", action="store_true")
+    parser.add_argument(
+        "--python-lsp-command",
+        help="Optional real Python language-server command, e.g. 'pyright-langserver --stdio'",
+    )
+    parser.add_argument("--lsp-timeout-seconds", type=positive_float, default=8.0)
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--trace-path", type=Path)
     parser.add_argument("--audit-path", type=Path)
+    parser.add_argument(
+        "--permission-file",
+        type=Path,
+        help="Persistent argument-aware tool permission rules",
+    )
     parser.add_argument("--no-trace", action="store_true")
     parser.add_argument("--llm-max-attempts", type=positive_int, default=3)
     parser.add_argument("--llm-base-delay", type=non_negative_float, default=0.25)
@@ -208,6 +231,21 @@ def main() -> int:
     if args.check_model:
         return run_model_probe(client, args.check_model)
 
+    try:
+        role_clients = {
+            role: LlmClientFactory.create(provider)
+            for role, provider in {
+                "planner": args.planner_provider,
+                "worker": args.worker_provider,
+                "reviewer": args.reviewer_provider,
+                "aggregator": args.aggregator_provider,
+            }.items()
+            if provider
+        }
+    except ValueError as exc:
+        print(f"Role model configuration error: {exc}")
+        return 2
+
     renderer = create_renderer(args.renderer)
 
     def event(kind: str, text: str) -> None:
@@ -223,6 +261,8 @@ def main() -> int:
             memory_path=args.memory_file,
             enable_rag=not args.no_rag,
             rag_path=args.rag_path,
+            python_lsp_command=args.python_lsp_command,
+            lsp_timeout_seconds=args.lsp_timeout_seconds,
             max_steps=args.max_steps,
             subagent_max_steps=args.subagent_max_steps,
             stagnation_window=args.stagnation_window,
@@ -235,17 +275,25 @@ def main() -> int:
             enable_hitl=True,
             approval_mode=args.approval_mode,
             audit_path=args.audit_path,
+            permission_path=args.permission_file,
+            extension_config=(
+                load_extension_config(args.extensions_file, root)
+                if args.extensions_file is not None
+                else None
+            ),
             enable_trace=not args.no_trace,
             trace_path=args.trace_path or root / ".paicli" / "traces.db",
             llm_max_attempts=args.llm_max_attempts,
             llm_base_delay_seconds=args.llm_base_delay,
             llm_max_delay_seconds=args.llm_max_delay,
+            role_clients=role_clients,
         )
         coordinator = RunCoordinator(
             runtime,
             root,
             state_store=RunStateStore(state_path),
             enable_snapshots=not args.no_snapshot,
+            snapshot_retention=args.snapshot_retention,
             limits=RunLimits(
                 max_tokens=args.max_run_tokens,
                 max_cost_cny=args.max_run_cost_cny,
@@ -467,11 +515,11 @@ def interactive_plan_approval(plan: ExecutionPlan) -> PlanReviewDecision:
 
 def interactive_rollback_decision(message: str) -> bool:
     try:
-        value = input(f"{message} [Y/n]: ").strip().lower()
+        value = input(f"{message} [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
-        return True
-    return value not in {"n", "no", "keep"}
+        return False
+    return value in {"y", "yes", "restore", "rollback"}
 
 
 def run_selected_mode(
@@ -517,7 +565,10 @@ def run_once(
 ) -> int:
     try:
         answer = agent.run(prompt, images=images)
-        print(f"\n{answer}")
+        if not (agent.last_outcome and agent.last_outcome.streamed):
+            print(f"\n{answer}")
+        else:
+            print()
         return 0
     except (AgentLoopError, CancelledError, LlmError, ValueError) as exc:
         print(f"\nError: {exc}")
@@ -528,7 +579,16 @@ def print_coordinated_result(
     runtime: ApplicationRuntime,
     result: CoordinatedRun,
 ) -> int:
-    print(f"\n{result.answer or '(no final answer)'}")
+    streamed = bool(result.agent_outcome and result.agent_outcome.streamed)
+    if (
+        result.orchestration_result is not None
+        and result.orchestration_result.aggregation_outcome is not None
+    ):
+        streamed = streamed or result.orchestration_result.aggregation_outcome.streamed
+    if streamed:
+        print()
+    else:
+        print(f"\n{result.answer or '(no final answer)'}")
     print(
         f"\n[run] id={result.run_id} mode={result.mode} status={result.status} "
         f"rolled_back={str(result.rolled_back).lower()}"

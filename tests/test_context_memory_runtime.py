@@ -280,6 +280,7 @@ class ContextMemoryRuntimeTest(unittest.TestCase):
                 SummaryClient(),
                 root,
                 enable_trace=False,
+                enable_hitl=False,
                 memory_path=root / "memory.db",
                 rag_path=root / ".paicli" / "code-index.db",
             )

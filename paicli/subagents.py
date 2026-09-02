@@ -358,10 +358,20 @@ Return a concise user-facing answer without tool calls."""
         on_event: EventHandler | None = None,
         cancellation: CancellationToken | None = None,
         trace_store: TraceStore | None = None,
+        role_clients: Mapping[SubAgentRole | str, LlmClient] | None = None,
+        system_prompts: Mapping[SubAgentRole | str, str] | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("sub-agent max_steps must be positive")
         self.client = client
+        self.role_clients = {
+            (key if isinstance(key, SubAgentRole) else SubAgentRole(str(key))): value
+            for key, value in dict(role_clients or {}).items()
+        }
+        self.system_prompts = {
+            (key if isinstance(key, SubAgentRole) else SubAgentRole(str(key))): str(value)
+            for key, value in dict(system_prompts or {}).items()
+        }
         self.tools = tools
         self.project_root = Path(project_root).resolve()
         self.long_term_memory = long_term_memory
@@ -377,13 +387,23 @@ Return a concise user-facing answer without tool calls."""
     def set_client(self, client: LlmClient) -> None:
         self.client = client
 
+    def set_role_client(self, role: SubAgentRole | str, client: LlmClient) -> None:
+        resolved = role if isinstance(role, SubAgentRole) else SubAgentRole(str(role))
+        self.role_clients[resolved] = client
+
+    def client_for(self, role: SubAgentRole) -> LlmClient:
+        return self.role_clients.get(role, self.client)
+
     def create_worker(self, task: Task, *, name: str | None = None) -> SubAgent:
         scope = self.scope_for_task(task)
         return self.create(
             name=name or f"worker-{task.id}",
             role=SubAgentRole.WORKER,
             scope=scope,
-            system_prompt=self.WORKER_SYSTEM_PROMPT,
+            system_prompt=self.system_prompts.get(
+                SubAgentRole.WORKER,
+                self.WORKER_SYSTEM_PROMPT,
+            ),
             completion_policy=TaskCompletionPolicy(task, self.tools),
         )
 
@@ -392,7 +412,10 @@ Return a concise user-facing answer without tool calls."""
             name=name,
             role=SubAgentRole.REVIEWER,
             scope=ToolScope.READ_ONLY,
-            system_prompt=self.REVIEWER_SYSTEM_PROMPT,
+            system_prompt=self.system_prompts.get(
+                SubAgentRole.REVIEWER,
+                self.REVIEWER_SYSTEM_PROMPT,
+            ),
         )
 
     def create_aggregator(self, *, name: str = "aggregator") -> SubAgent:
@@ -400,7 +423,10 @@ Return a concise user-facing answer without tool calls."""
             name=name,
             role=SubAgentRole.AGGREGATOR,
             scope=ToolScope.NONE,
-            system_prompt=self.AGGREGATOR_SYSTEM_PROMPT,
+            system_prompt=self.system_prompts.get(
+                SubAgentRole.AGGREGATOR,
+                self.AGGREGATOR_SYSTEM_PROMPT,
+            ),
             enable_memory=False,
         )
 
@@ -415,14 +441,15 @@ Return a concise user-facing answer without tool calls."""
         enable_memory: bool | None = None,
     ) -> SubAgent:
         tool_runtime = self._tool_runtime(scope, name)
-        settings = self._settings()
+        role_client = self.client_for(role)
+        settings = self._settings(role_client)
         use_memory = self.enable_memory if enable_memory is None else enable_memory
         memory: MemoryManager | None = None
         if use_memory:
             memory = MemoryManager(
                 max_tokens=settings.compression_trigger_tokens,
                 long_term=self.long_term_memory,
-                history_compactor=ConversationHistoryCompactor(self.client),
+                history_compactor=ConversationHistoryCompactor(role_client),
                 long_term_context_tokens=settings.memory_context_tokens,
             )
         context = ContextController(settings)
@@ -439,7 +466,7 @@ Return a concise user-facing answer without tool calls."""
                 self.on_event(kind, f"[{name}] {text}")
 
         agent = Agent(
-            self.client,
+            role_client,
             tool_runtime,
             max_steps=self.max_steps,
             stagnation_window=self.stagnation_window,
@@ -480,8 +507,9 @@ Return a concise user-facing answer without tool calls."""
             scope_name=f"{name}:{scope.value}",
         )
 
-    def _settings(self) -> ContextSettings:
-        raw_window = getattr(self.client, "context_window", 128_000)
+    def _settings(self, client: LlmClient | None = None) -> ContextSettings:
+        active_client = client or self.client
+        raw_window = getattr(active_client, "context_window", 128_000)
         try:
             context_window = max(8_000, int(raw_window))
         except (TypeError, ValueError):
@@ -489,7 +517,7 @@ Return a concise user-facing answer without tool calls."""
         return ContextSettings.for_model(
             context_window,
             supports_prompt_caching=bool(
-                getattr(self.client, "supports_prompt_caching", False)
+                getattr(active_client, "supports_prompt_caching", False)
             ),
         )
 

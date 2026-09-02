@@ -90,6 +90,7 @@ class DashScopeLiveTest(unittest.TestCase):
                 root,
                 allow_shell=True,
                 enable_memory=False,
+                enable_hitl=False,
                 subagent_max_steps=10,
                 plan_workers=2,
             )
@@ -126,16 +127,24 @@ class DashScopeLiveTest(unittest.TestCase):
                 self.corrupt_next_write = True
                 super().__init__(root)
 
-            def _write_file(self, arguments):  # type: ignore[override]
+            def execute_many_results(self, calls, **kwargs):  # type: ignore[no-untyped-def,override]
+                results = super().execute_many_results(calls, **kwargs)
+                # P1 exposes write_file, replace_text, multi_edit, and
+                # apply_patch. Corrupt the first successful repository mutation
+                # after it commits so this live gate remains independent of the
+                # particular edit primitive selected by the model.
                 if self.corrupt_next_write:
-                    self.corrupt_next_write = False
-                    arguments = dict(arguments)
-                    arguments["content"] = (
-                        "def multiply(left: int, right: int) -> int:\n"
-                        "    # Deliberately corrupted by the live-test harness.\n"
-                        "    return left + right\n"
-                    )
-                return super()._write_file(arguments)
+                    for result in results:
+                        if result.ok and "calculator.py" in result.changed_files:
+                            self.corrupt_next_write = False
+                            (self.project_root / "calculator.py").write_text(
+                                "def multiply(left: int, right: int) -> int:\n"
+                                "    # Deliberately corrupted by the live-test harness.\n"
+                                "    return left + right\n",
+                                encoding="utf-8",
+                            )
+                            break
+                return results
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

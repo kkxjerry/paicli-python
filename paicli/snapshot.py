@@ -13,7 +13,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Iterable
@@ -31,12 +31,15 @@ class TurnSnapshot:
     created_at: float
     files: dict[str, str | None]
     tree: bool = False
+    skipped: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RestoreResult:
     restored: tuple[str, ...]
     removed: tuple[str, ...]
+    skipped: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
 
 class SnapshotService:
@@ -108,38 +111,65 @@ class SnapshotService:
         return snapshot
 
     def capture_tree(self, phase: SnapshotPhase) -> TurnSnapshot:
-        """Capture every bounded project file not excluded by policy."""
+        """Capture the bounded part of a project without blocking the run.
+
+        Large/generated repositories routinely contain artifacts that are not
+        reasonable to copy into a JSON snapshot.  Those paths are recorded as
+        skipped and are protected from deletion during restore; one oversized
+        file therefore no longer prevents the Agent from starting.
+        """
 
         files: dict[str, str | None] = {}
+        skipped: dict[str, str] = {}
         total_bytes = 0
         for path in sorted(self.project_root.rglob("*")):
             relative = path.relative_to(self.project_root)
             if self._ignored(relative):
                 continue
+            key = relative.as_posix()
             if path.is_symlink():
-                resolved = path.resolve()
+                try:
+                    resolved = path.resolve(strict=True)
+                except OSError as exc:
+                    skipped[key] = f"unreadable symlink: {exc}"
+                    continue
                 if not resolved.is_relative_to(self.project_root):
-                    raise ValueError(
-                        f"snapshot symbolic link escapes project root: {relative}"
-                    )
+                    skipped[key] = "symbolic link escapes project root"
+                    continue
                 if len(files) >= self.max_files:
-                    raise ValueError(
-                        f"snapshot exceeds file limit ({self.max_files})"
-                    )
-                files[relative.as_posix()] = (
-                    self.SYMLINK_PREFIX + os.readlink(path)
-                )
+                    skipped[key] = f"snapshot file limit reached ({self.max_files})"
+                    continue
+                files[key] = self.SYMLINK_PREFIX + os.readlink(path)
                 continue
             if not path.is_file():
                 continue
             if len(files) >= self.max_files:
-                raise ValueError(
-                    f"snapshot exceeds file limit ({self.max_files})"
+                skipped[key] = f"snapshot file limit reached ({self.max_files})"
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                skipped[key] = f"could not stat file: {exc}"
+                continue
+            if size > self.max_file_bytes:
+                skipped[key] = (
+                    f"file exceeds snapshot limit ({size} > {self.max_file_bytes})"
                 )
-            key = relative.as_posix()
-            data = self._read_bounded(path, key)
+                continue
+            if total_bytes + size > self.max_total_bytes:
+                skipped[key] = (
+                    "snapshot total-byte limit would be exceeded "
+                    f"({self.max_total_bytes})"
+                )
+                continue
+            try:
+                data = self._read_bounded(path, key)
+            except (OSError, ValueError) as exc:
+                # The file may have grown between stat() and read().  Treat it
+                # like any other excluded artifact instead of failing startup.
+                skipped[key] = str(exc)
+                continue
             total_bytes += len(data)
-            self._check_total(total_bytes)
             files[key] = base64.b64encode(data).decode("ascii")
 
         snapshot = TurnSnapshot(
@@ -148,6 +178,7 @@ class SnapshotService:
             time.time(),
             files,
             True,
+            skipped,
         )
         self._persist(snapshot)
         return snapshot
@@ -161,6 +192,10 @@ class SnapshotService:
             float(payload["created_at"]),
             dict(payload["files"]),
             bool(payload.get("tree", False)),
+            {
+                str(key): str(value)
+                for key, value in dict(payload.get("skipped", {})).items()
+            },
         )
 
     def restore(self, snapshot_id: str) -> RestoreResult:
@@ -181,7 +216,11 @@ class SnapshotService:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(encoded))
             restored.append(raw_path)
-        return RestoreResult(tuple(restored), tuple(removed))
+        return RestoreResult(
+            tuple(restored),
+            tuple(removed),
+            tuple(sorted(snapshot.skipped)),
+        )
 
     def restore_tree(self, snapshot_id: str) -> RestoreResult:
         snapshot = self.load(snapshot_id)
@@ -195,8 +234,44 @@ class SnapshotService:
         snapshots = [self.load(path.stem) for path in self.store.glob("*.json")]
         return sorted(snapshots, key=lambda item: item.created_at)
 
+    def prune(
+        self,
+        *,
+        keep_ids: Iterable[str] = (),
+        keep_last: int = 40,
+        max_age_seconds: float | None = None,
+    ) -> tuple[str, ...]:
+        """Delete old unreferenced snapshots and return removed IDs."""
+
+        if keep_last < 0:
+            raise ValueError("keep_last cannot be negative")
+        if max_age_seconds is not None and max_age_seconds < 0:
+            raise ValueError("max_age_seconds cannot be negative")
+        snapshots = self.list_snapshots()
+        protected = {str(value) for value in keep_ids if str(value)}
+        if keep_last:
+            protected.update(item.id for item in snapshots[-keep_last:])
+        cutoff = (
+            time.time() - max_age_seconds
+            if max_age_seconds is not None
+            else None
+        )
+        removed: list[str] = []
+        for snapshot in snapshots:
+            if snapshot.id in protected:
+                continue
+            if cutoff is not None and snapshot.created_at >= cutoff:
+                continue
+            try:
+                (self.store / f"{snapshot.id}.json").unlink()
+            except FileNotFoundError:
+                continue
+            removed.append(snapshot.id)
+        return tuple(removed)
+
     def _restore_tree_snapshot(self, snapshot: TurnSnapshot) -> RestoreResult:
         expected = set(snapshot.files)
+        protected = set(snapshot.skipped)
         removed: list[str] = []
         for path in sorted(self.project_root.rglob("*"), reverse=True):
             if not path.is_file() and not path.is_symlink():
@@ -205,7 +280,7 @@ class SnapshotService:
             if self._ignored(relative):
                 continue
             key = relative.as_posix()
-            if key not in expected:
+            if key not in expected and key not in protected:
                 path.unlink()
                 removed.append(key)
 
@@ -227,7 +302,11 @@ class SnapshotService:
             safe_path.write_bytes(base64.b64decode(encoded))
             restored.append(raw_path)
         self._remove_empty_directories()
-        return RestoreResult(tuple(restored), tuple(removed))
+        return RestoreResult(
+            tuple(restored),
+            tuple(removed),
+            tuple(sorted(snapshot.skipped)),
+        )
 
     def _persist(self, snapshot: TurnSnapshot) -> None:
         self.store.mkdir(parents=True, exist_ok=True)

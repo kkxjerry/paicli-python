@@ -56,6 +56,7 @@ class AgentOutcome:
     error: str = ""
     changed_files: tuple[str, ...] = ()
     tool_results: tuple[ToolResult, ...] = ()
+    streamed: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -92,6 +93,61 @@ class ToolObservingCompletionPolicy(CompletionPolicy, Protocol):
     def observe_tool_results(self, results: tuple[ToolResult, ...]) -> None:
         """Receive machine-readable results from the current run."""
         ...
+
+
+class DiagnosticsCompletionPolicy:
+    """Prevent completion while post-edit diagnostics still contain errors."""
+
+    def __init__(self, delegate: CompletionPolicy) -> None:
+        self.delegate = delegate
+        self._reports: dict[str, Any] = {}
+
+    def begin_run(self) -> None:
+        self._reports.clear()
+        begin = getattr(self.delegate, "begin_run", None)
+        if callable(begin):
+            begin()
+
+    def observe_tool_results(self, results: tuple[ToolResult, ...]) -> None:
+        observe = getattr(self.delegate, "observe_tool_results", None)
+        if callable(observe):
+            observe(results)
+
+    def observe_diagnostics(self, reports: tuple[Any, ...]) -> None:
+        for report in reports:
+            path = str(getattr(report, "path", ""))
+            if path:
+                self._reports[path] = report
+        observe = getattr(self.delegate, "observe_diagnostics", None)
+        if callable(observe):
+            observe(reports)
+
+    def evaluate(
+        self,
+        response: ChatResponse,
+        history: list[dict[str, Any]],
+    ) -> CompletionDecision:
+        decision = self.delegate.evaluate(response, history)
+        if not decision.completed:
+            return decision
+        errors: list[str] = []
+        for path, report in self._reports.items():
+            if not bool(getattr(report, "has_errors", False)):
+                continue
+            diagnostics = getattr(report, "diagnostics", ())
+            details = "; ".join(
+                f"line {getattr(item, 'line', '?')}:{getattr(item, 'column', '?')} "
+                f"{getattr(item, 'message', item)}"
+                for item in diagnostics
+            )
+            errors.append(f"{path}: {details}")
+        if not errors:
+            return decision
+        return CompletionDecision(
+            False,
+            "Post-edit diagnostics still contain errors. Fix them before "
+            "finishing:\n" + "\n".join(f"- {item}" for item in errors),
+        )
 
 
 class NonEmptyCompletionPolicy:
