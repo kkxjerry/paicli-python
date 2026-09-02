@@ -34,7 +34,7 @@ jobs:
           python -m pip install -e .
           paicli --help >/dev/null
           paicli-eval --help >/dev/null
-          python -c "import importlib.metadata, paicli; assert importlib.metadata.version('paicli-python') == paicli.__version__ == '1.0.0'"
+          python -c "import importlib.metadata, paicli; assert importlib.metadata.version('paicli-python') == paicli.__version__"
       - name: Ensure real-provider tests remain opt-in
         run: |
           test "${PAICLI_RUN_DASHSCOPE_LIVE_TEST:-0}" = "0"
