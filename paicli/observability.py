@@ -702,6 +702,77 @@ class ObservedLlmClient:
             )
         return response
 
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_event: Callable[[str, str], None] | None = None,
+    ) -> ChatResponse:
+        stream = getattr(self.client, "chat_stream", None)
+        if not callable(stream):
+            return self.chat(messages, tools)
+        budget = current_run_budget()
+        if budget is not None:
+            budget.before_model_call()
+        started_perf = time.perf_counter()
+        started_wall = time.time()
+        context = current_trace_context()
+        provider = str(getattr(self.client, "provider", "custom"))
+        model = str(getattr(self.client, "model", "unknown"))
+        try:
+            response = stream(messages, tools, on_event)
+        except Exception as exc:
+            duration = max(0, int((time.perf_counter() - started_perf) * 1000))
+            if budget is not None:
+                budget.after_model_call(0, 0, 0, None, failed=True)
+            if self.trace_store is not None:
+                self.trace_store.record_model_call(
+                    context=context,
+                    provider=provider,
+                    model=model,
+                    status="failed",
+                    started_at=started_wall,
+                    duration_ms=duration,
+                    tool_schema_count=len(tools),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+        duration = max(0, int((time.perf_counter() - started_perf) * 1000))
+        model_pricing = self.pricing.get(provider, model)
+        cost = (
+            model_pricing.estimate(
+                response.input_tokens,
+                response.output_tokens,
+                response.cached_input_tokens,
+            )
+            if model_pricing is not None
+            else None
+        )
+        if budget is not None:
+            budget.after_model_call(
+                response.input_tokens,
+                response.output_tokens,
+                response.cached_input_tokens,
+                cost,
+                failed=False,
+            )
+        if self.trace_store is not None:
+            self.trace_store.record_model_call(
+                context=context,
+                provider=provider,
+                model=model,
+                status="succeeded",
+                started_at=started_wall,
+                duration_ms=duration,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cached_input_tokens=response.cached_input_tokens,
+                estimated_cost_cny=cost,
+                tool_schema_count=len(tools),
+                response_tool_count=len(response.tool_calls),
+            )
+        return response
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)
 

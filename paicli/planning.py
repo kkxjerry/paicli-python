@@ -459,10 +459,12 @@ Rules:
         *,
         max_repair_attempts: int = 1,
         simple_goal_detector: Callable[[str], bool] | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         if max_repair_attempts < 0:
             raise ValueError("max_repair_attempts cannot be negative")
         self.client = client
+        self.system_prompt = system_prompt or self.SYSTEM_PROMPT
         self.max_repair_attempts = max_repair_attempts
         self.simple_goal_detector = simple_goal_detector or _is_simple_goal
         self.last_raw_response = ""
@@ -544,7 +546,7 @@ Rules:
         if request_context:
             user_prompt += "\n\nPlanning context:\n" + request_context
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         last_error = ""

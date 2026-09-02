@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 
 from ..context import ContextController
 from ..llm_client import LlmClient, ToolCall
-from ..lsp import LspDiagnosticFormatter, LspManager
+from ..lsp import LspDiagnosticFormatter, LspDiagnosticReport, LspManager
 from ..memory import MemoryManager
 from ..runtime import CancelledError, CancellationToken
 from ..tool_contracts import ToolResult
@@ -123,7 +123,13 @@ class AgentLoopEngine:
 
             budget.begin_iteration()
             messages = self._prepare_messages()
-            response = self.client.chat(messages, self.tools.definitions())
+            definitions = self.tools.definitions()
+            stream = getattr(self.client, "chat_stream", None)
+            response = (
+                stream(messages, definitions, self._stream_event)
+                if callable(stream)
+                else self.client.chat(messages, definitions)
+            )
             budget.record_response(response)
 
             # Cancellation may arrive while the provider request is in flight.
@@ -161,6 +167,7 @@ class AgentLoopEngine:
                         iterations=budget.iteration,
                         changed_files=tuple(changed_files),
                         tool_results=tuple(tool_results),
+                        streamed=response.streamed,
                     )
 
                 feedback = decision.feedback.strip() or (
@@ -211,7 +218,14 @@ class AgentLoopEngine:
                     if changed_path not in changed_files:
                         changed_files.append(changed_path)
                 if result.ok and result.changed_files:
-                    self._report_diagnostics(call.name, call.arguments)
+                    reports = self._report_diagnostics(result)
+                    observe_diagnostics = getattr(
+                        self.completion_policy,
+                        "observe_diagnostics",
+                        None,
+                    )
+                    if callable(observe_diagnostics):
+                        observe_diagnostics(tuple(reports))
 
             budget.record_tool_round(
                 response.tool_calls,
@@ -228,6 +242,18 @@ class AgentLoopEngine:
             )
             if cancelled is not None:
                 return cancelled
+
+    def _stream_event(self, kind: str, text: str) -> None:
+        if not text:
+            return
+        # ``*_delta`` is the public event contract.  Normalize the shorter
+        # names used by a few custom clients so renderers and traces receive a
+        # single stable vocabulary.
+        normalized = {
+            "reasoning": "reasoning_delta",
+            "content": "content_delta",
+        }.get(kind, kind)
+        self.on_event(normalized, text)
 
     def _cancelled_outcome(
         self,
@@ -289,16 +315,32 @@ class AgentLoopEngine:
             for call in calls
         ]
 
-    def _report_diagnostics(self, tool_name: str, arguments_json: str) -> None:
-        if self.lsp is None or tool_name != "write_file":
-            return
-        try:
-            path = str(json.loads(arguments_json)["path"])
-            report = self.lsp.diagnostics_for(path)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            return
-        if report.diagnostics:
-            self.on_event("diagnostics", LspDiagnosticFormatter.format(report))
+    def _report_diagnostics(
+        self,
+        result: ToolResult,
+    ) -> list[LspDiagnosticReport]:
+        if self.lsp is None:
+            return []
+        reports: list[LspDiagnosticReport] = []
+        for path in result.changed_files:
+            try:
+                report = self.lsp.diagnostics_for(path)
+            except (OSError, TypeError, ValueError):
+                continue
+            reports.append(report)
+            if not report.diagnostics:
+                continue
+            formatted = LspDiagnosticFormatter.format(report)
+            self.on_event("diagnostics", formatted)
+            # Diagnostics are framework observations. Put them back into the
+            # model-visible history so the Agent can correct its own edit.
+            self.history.append(
+                {
+                    "role": "system",
+                    "content": "Post-edit diagnostics:\n" + formatted,
+                }
+            )
+        return reports
 
     @staticmethod
     def _budget_outcome(

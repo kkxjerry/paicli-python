@@ -8,8 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .agent import Agent
+from .agent import Agent, SYSTEM_PROMPT
 from .context import ContextController, ContextSettings
+from .extensions import (
+    ExtensionConfig,
+    InstalledExtensions,
+    install_extensions,
+)
 from .llm_client import LlmClient, RetryingLlmClient, unwrap_llm_client
 from .lsp import LspManager
 from .managed_memory import ManagedMemoryStore
@@ -27,7 +32,9 @@ from .observability import (
 )
 from .orchestration import PlanModeRuntime, TeamModeRuntime
 from .planning import LlmPlanner
+from .prompts import PromptMode, assemble_system_prompt
 from .rag import CodeIndex, IndexRefreshingToolGateway
+from .permissions import PermissionStore, default_permission_path
 from .policy import (
     ApprovalHandler,
     ApprovalMode,
@@ -35,7 +42,7 @@ from .policy import (
     ConsoleApprovalHandler,
     HitlToolRegistry,
 )
-from .subagents import SubAgentFactory
+from .subagents import SubAgentFactory, SubAgentRole
 from .tools import ToolRegistry
 
 EventHandler = Callable[[str, str], None]
@@ -68,6 +75,8 @@ class ApplicationRuntime:
     llm_max_attempts: int = 3
     llm_base_delay_seconds: float = 0.25
     llm_max_delay_seconds: float = 4.0
+    role_clients: dict[str, LlmClient] | None = None
+    extensions: InstalledExtensions | None = None
 
     @property
     def tools(self) -> Any:
@@ -135,10 +144,29 @@ class ApplicationRuntime:
                 metadata=metadata,
             )
 
+    def capability_matrix(self) -> dict[str, object]:
+        """Return only capabilities reachable through this assembled runtime."""
+
+        tools = tuple(sorted(self.tools.names()))
+        return {
+            "modes": ("react", "plan", "team"),
+            "tools": tools,
+            "memory": self.react.long_term_memory is not None,
+            "rag": self.react.code_index is not None,
+            "trace": self.trace_store is not None,
+            "extensions": self.extensions is not None
+            and bool(self.extensions.installed_tools),
+            "extension_tools": (
+                self.extensions.installed_tools if self.extensions is not None else ()
+            ),
+            "role_models": tuple(sorted(self.role_clients or {})),
+        }
+
     def close(self) -> None:
         resources = (
             self.react.code_index,
             self.react.long_term_memory,
+            self.extensions,
             self.trace_store,
         )
         closed: set[int] = set()
@@ -188,11 +216,14 @@ def build_react_runtime(
     enable_rag: bool = False,
     rag_path: str | Path | None = None,
     code_index: CodeIndex | None = None,
+    python_lsp_command: tuple[str, ...] | str | None = None,
+    lsp_timeout_seconds: float = 8.0,
     max_steps: int = 50,
     stagnation_window: int = 3,
     token_budget: int | None = None,
     on_event: EventHandler | None = None,
     tools: Any | None = None,
+    system_prompt: str | None = None,
 ) -> ReactRuntime:
     """Build the default ReAct path; callers may supply a guarded gateway."""
 
@@ -240,7 +271,16 @@ def build_react_runtime(
         on_event=on_event,
         memory=memory,
         context=context,
-        lsp=LspManager(root),
+        lsp=LspManager(
+            root,
+            python_lsp_command=python_lsp_command,
+            lsp_timeout_seconds=lsp_timeout_seconds,
+        ),
+        system_prompt=system_prompt or assemble_system_prompt(
+            SYSTEM_PROMPT,
+            mode=PromptMode.REACT,
+            project_root=root,
+        ),
     )
     return ReactRuntime(
         agent,
@@ -261,6 +301,8 @@ def build_application_runtime(
     memory_path: str | Path | None = None,
     enable_rag: bool = True,
     rag_path: str | Path | None = None,
+    python_lsp_command: tuple[str, ...] | str | None = None,
+    lsp_timeout_seconds: float = 8.0,
     max_steps: int = 50,
     subagent_max_steps: int = 12,
     stagnation_window: int = 3,
@@ -274,12 +316,18 @@ def build_application_runtime(
     approval_mode: ApprovalMode | str | None = None,
     approval_handler: ApprovalHandler | None = None,
     audit_path: str | Path | None = None,
+    permission_path: str | Path | None = None,
     enable_trace: bool = True,
     trace_path: str | Path | None = None,
     pricing: PricingCatalog | None = None,
     llm_max_attempts: int = 3,
     llm_base_delay_seconds: float = 0.25,
     llm_max_delay_seconds: float = 4.0,
+    role_clients: Mapping[str, LlmClient] | None = None,
+    skill_index: tuple[str, ...] = (),
+    resource_index: tuple[str, ...] = (),
+    runtime_notes: tuple[str, ...] = (),
+    extension_config: ExtensionConfig | None = None,
 ) -> ApplicationRuntime:
     """Build the complete application from one shared infrastructure graph."""
 
@@ -295,6 +343,23 @@ def build_application_runtime(
         base_delay_seconds=llm_base_delay_seconds,
         max_delay_seconds=llm_max_delay_seconds,
     )
+    wrapped_roles: dict[str, LlmClient] = {}
+    allowed_roles = {"planner", "worker", "reviewer", "aggregator"}
+    for raw_role, role_client in dict(role_clients or {}).items():
+        role = str(raw_role).strip().lower()
+        if role not in allowed_roles:
+            raise ValueError(
+                f"unknown role client {raw_role!r}; choose: "
+                + ", ".join(sorted(allowed_roles))
+            )
+        wrapped_roles[role], _ = _wrap_client(
+            role_client,
+            trace_store,
+            pricing=effective_pricing,
+            max_attempts=llm_max_attempts,
+            base_delay_seconds=llm_base_delay_seconds,
+            max_delay_seconds=llm_max_delay_seconds,
+        )
 
     registry = ToolRegistry(root, allow_shell=allow_shell)
     code_index: CodeIndex | None = None
@@ -303,8 +368,19 @@ def build_application_runtime(
         code_index.build()
         code_index.register_tool(registry)
 
+    installed_extensions = (
+        install_extensions(registry, root, extension_config)
+        if extension_config is not None
+        else InstalledExtensions()
+    )
+    skill_index = tuple((*skill_index, *installed_extensions.skill_index))
+    resource_index = tuple((*resource_index, *installed_extensions.resource_index))
+
     gateway: Any = registry
-    use_hitl = enable_hitl if enable_hitl is not None else approval_mode is not None
+    # The complete application is fail-closed for library callers as well as
+    # the CLI. Callers that deliberately provide their own isolation may opt
+    # out with enable_hitl=False.
+    use_hitl = True if enable_hitl is None else enable_hitl
     if use_hitl:
         mode = (
             approval_mode
@@ -321,10 +397,58 @@ def build_application_runtime(
                 if audit_path is not None
                 else root / ".paicli" / "audit"
             ),
+            permission_store=PermissionStore(
+                Path(permission_path).expanduser()
+                if permission_path is not None
+                else default_permission_path(root)
+            ),
         )
     if code_index is not None:
         gateway = IndexRefreshingToolGateway(gateway, code_index)
     gateway = ObservedToolGateway(gateway, trace_store)
+
+    react_prompt = assemble_system_prompt(
+        SYSTEM_PROMPT,
+        mode=PromptMode.REACT,
+        project_root=root,
+        skill_index=skill_index,
+        resource_index=resource_index,
+        runtime_notes=runtime_notes,
+    )
+    planner_prompt = assemble_system_prompt(
+        LlmPlanner.SYSTEM_PROMPT,
+        mode=PromptMode.PLAN,
+        project_root=root,
+        skill_index=skill_index,
+        resource_index=resource_index,
+        runtime_notes=runtime_notes,
+    )
+    role_prompts = {
+        SubAgentRole.WORKER: assemble_system_prompt(
+            SubAgentFactory.WORKER_SYSTEM_PROMPT,
+            mode=PromptMode.TEAM,
+            project_root=root,
+            skill_index=skill_index,
+            resource_index=resource_index,
+            runtime_notes=runtime_notes,
+        ),
+        SubAgentRole.REVIEWER: assemble_system_prompt(
+            SubAgentFactory.REVIEWER_SYSTEM_PROMPT,
+            mode=PromptMode.TEAM,
+            project_root=root,
+            skill_index=skill_index,
+            resource_index=resource_index,
+            runtime_notes=runtime_notes,
+        ),
+        SubAgentRole.AGGREGATOR: assemble_system_prompt(
+            SubAgentFactory.AGGREGATOR_SYSTEM_PROMPT,
+            mode=PromptMode.TEAM,
+            project_root=root,
+            skill_index=skill_index,
+            resource_index=resource_index,
+            runtime_notes=runtime_notes,
+        ),
+    }
 
     react = build_react_runtime(
         wrapped_client,
@@ -335,11 +459,14 @@ def build_application_runtime(
         enable_rag=enable_rag,
         rag_path=rag_path,
         code_index=code_index,
+        python_lsp_command=python_lsp_command,
+        lsp_timeout_seconds=lsp_timeout_seconds,
         max_steps=max_steps,
         stagnation_window=stagnation_window,
         token_budget=token_budget,
         on_event=on_event,
         tools=gateway,
+        system_prompt=react_prompt,
     )
     subagents = SubAgentFactory(
         wrapped_client,
@@ -351,31 +478,40 @@ def build_application_runtime(
         stagnation_window=stagnation_window,
         token_budget=token_budget,
         on_event=on_event,
+        role_clients={
+            SubAgentRole.WORKER: wrapped_roles.get("worker", wrapped_client),
+            SubAgentRole.REVIEWER: wrapped_roles.get("reviewer", wrapped_client),
+            SubAgentRole.AGGREGATOR: wrapped_roles.get("aggregator", wrapped_client),
+        },
+        system_prompts=role_prompts,
     )
+    planner_client = wrapped_roles.get("planner", wrapped_client)
     plan = PlanModeRuntime(
-        LlmPlanner(wrapped_client),
+        LlmPlanner(planner_client, system_prompt=planner_prompt),
         subagents,
         max_workers=plan_workers,
         max_plan_revisions=plan_revisions,
         on_event=on_event,
     )
     team = TeamModeRuntime(
-        LlmPlanner(wrapped_client),
+        LlmPlanner(planner_client, system_prompt=planner_prompt),
         subagents,
         max_workers=team_workers,
         max_review_retries=review_retries,
         on_event=on_event,
     )
     return ApplicationRuntime(
-        react,
-        plan,
-        team,
-        subagents,
-        trace_store,
-        effective_pricing,
-        llm_max_attempts,
-        llm_base_delay_seconds,
-        llm_max_delay_seconds,
+        react=react,
+        plan=plan,
+        team=team,
+        subagents=subagents,
+        trace_store=trace_store,
+        pricing=effective_pricing,
+        llm_max_attempts=llm_max_attempts,
+        llm_base_delay_seconds=llm_base_delay_seconds,
+        llm_max_delay_seconds=llm_max_delay_seconds,
+        role_clients={"react": wrapped_client, **wrapped_roles},
+        extensions=installed_extensions,
     )
 
 

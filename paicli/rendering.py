@@ -41,8 +41,15 @@ class PlainRenderer:
         self.stream = stream
 
     def event(self, kind: str, text: str) -> None:
-        # 最终回答不加前缀，其他内部事件标记 kind 便于追踪。
-        if kind == "answer":
+        if kind == "content_delta":
+            self.stream.write(text)
+            self.stream.flush()
+        elif kind == "reasoning_delta":
+            # Plain/log mode retains the channel label. Interactive rendering
+            # can present reasoning more compactly without changing the Agent.
+            self.stream.write(f"[thinking] {text}")
+            self.stream.flush()
+        elif kind == "answer":
             self.stream.write(f"{text}\n")
         else:
             self.stream.write(f"[{kind}] {text}\n")
@@ -137,9 +144,28 @@ class InlineRenderer:
         self.capabilities = capabilities or TerminalCapabilities.detect(stream)
         self.blocks = BlockRegistry()
         self._status = ""
+        self._reasoning_active = False
+        self._content_active = False
 
     def event(self, kind: str, text: str) -> None:
-        if kind == "tool":
+        if kind == "reasoning_delta":
+            if not self._reasoning_active:
+                self.stream.write("Thinking: ")
+                self._reasoning_active = True
+            self.stream.write(text)
+            self.stream.flush()
+        elif kind == "content_delta":
+            if self._reasoning_active:
+                self.stream.write("\n")
+                self._reasoning_active = False
+            self._content_active = True
+            self.stream.write(text)
+            self.stream.flush()
+        elif kind == "tool":
+            if self._reasoning_active or self._content_active:
+                self.stream.write("\n")
+                self._reasoning_active = False
+                self._content_active = False
             # tool 事件先创建 waiting 块，result 到达时再回填。
             index = self.blocks.add(FoldableBlock(f"tool {text}", "waiting"))
             self.stream.write(self.blocks.blocks[index].render(self.capabilities.width))
@@ -151,7 +177,12 @@ class InlineRenderer:
             preview = text.replace("\n", " ")[: max(1, self.capabilities.width - 11)]
             self.stream.write(f"  result: {preview}\n")
         elif kind == "answer":
-            self.stream.write(f"{text}\n")
+            if self._reasoning_active or self._content_active:
+                self.stream.write("\n")
+                self._reasoning_active = False
+                self._content_active = False
+            else:
+                self.stream.write(f"{text}\n")
         else:
             self.stream.write(f"[{kind}] {text}\n")
 

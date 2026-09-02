@@ -61,16 +61,23 @@ class SnapshotTest(unittest.TestCase):
             self.assertIn("src/app.py", result.restored)
             self.assertIn("src/new.py", result.removed)
 
-    def test_tree_snapshot_enforces_total_limit(self) -> None:
+    def test_tree_snapshot_skips_total_limit_without_blocking_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "large.txt").write_text("123456", encoding="utf-8")
+            target = root / "large.txt"
+            target.write_text("123456", encoding="utf-8")
             service = SnapshotService(root, max_total_bytes=5)
 
-            with self.assertRaisesRegex(ValueError, "total byte limit"):
-                service.capture_tree(SnapshotPhase.BEFORE)
+            snapshot = service.capture_tree(SnapshotPhase.BEFORE)
+            target.write_text("changed", encoding="utf-8")
+            result = service.restore_tree(snapshot.id)
 
-    def test_tree_snapshot_rejects_symbolic_link_to_external_file(self) -> None:
+            self.assertIn("large.txt", snapshot.skipped)
+            self.assertIn("total-byte limit", snapshot.skipped["large.txt"])
+            self.assertEqual("changed", target.read_text(encoding="utf-8"))
+            self.assertIn("large.txt", result.skipped)
+
+    def test_tree_snapshot_records_symbolic_link_to_external_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
             root = outer / "project"
@@ -79,8 +86,49 @@ class SnapshotTest(unittest.TestCase):
             outside.write_text("secret", encoding="utf-8")
             (root / "escape.txt").symlink_to(outside)
 
-            with self.assertRaisesRegex(ValueError, "symbolic link escapes"):
-                SnapshotService(root).capture_tree(SnapshotPhase.BEFORE)
+            service = SnapshotService(root)
+            snapshot = service.capture_tree(SnapshotPhase.BEFORE)
+            result = service.restore_tree(snapshot.id)
+
+            self.assertIn("escape.txt", snapshot.skipped)
+            self.assertIn("symbolic link escapes", snapshot.skipped["escape.txt"])
+            self.assertTrue((root / "escape.txt").is_symlink())
+            self.assertIn("escape.txt", result.skipped)
+
+    def test_tree_snapshot_skips_oversized_file_and_preserves_it_on_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "large.bin"
+            target.write_bytes(b"123456")
+            service = SnapshotService(root, max_file_bytes=5)
+            snapshot = service.capture_tree(SnapshotPhase.BEFORE)
+
+            target.write_bytes(b"changed")
+            service.restore_tree(snapshot.id)
+
+            self.assertIn("large.bin", snapshot.skipped)
+            self.assertEqual(b"changed", target.read_bytes())
+
+    def test_snapshot_prune_preserves_explicit_and_recent_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = SnapshotService(root)
+            snapshots = [
+                service.capture_tree(SnapshotPhase.BEFORE)
+                for _ in range(4)
+            ]
+
+            removed = service.prune(
+                keep_ids={snapshots[0].id},
+                keep_last=1,
+            )
+
+            self.assertEqual(
+                {snapshots[1].id, snapshots[2].id},
+                set(removed),
+            )
+            self.assertTrue((service.store / f"{snapshots[0].id}.json").is_file())
+            self.assertTrue((service.store / f"{snapshots[3].id}.json").is_file())
 
     def test_tree_snapshot_restores_internal_symbolic_link(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

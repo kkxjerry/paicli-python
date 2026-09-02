@@ -67,6 +67,11 @@ class ChatResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    reasoning: str = ""
+    streamed: bool = False
+
+
+StreamHandler = Callable[[str, str], None]
 
 
 class LlmClient(Protocol):
@@ -218,6 +223,139 @@ class OpenAICompatibleClient:
                 "output_tokens",
             ),
             cached_input_tokens=_cached_input_tokens(usage),
+            reasoning=_reasoning_text(message),
+        )
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_event: StreamHandler | None = None,
+    ) -> ChatResponse:
+        """Consume an OpenAI-compatible SSE chat stream.
+
+        The method reconstructs fragmented content, reasoning, and function
+        arguments into the same ``ChatResponse`` contract used by blocking
+        providers.  Callers that do not expose streaming remain compatible with
+        ``chat`` through the optional protocol check in ``AgentLoopEngine``.
+        """
+
+        emit = on_event or (lambda _kind, _text: None)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            opener = (
+                self._loopback_opener.open
+                if self._loopback_opener is not None
+                else urllib.request.urlopen
+            )
+            with opener(request, timeout=self.timeout_seconds) as response:
+                content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                tool_parts: dict[int, dict[str, str]] = {}
+                usage: dict[str, Any] = {}
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise LlmError(
+                            f"invalid streaming model chunk: {data[:500]}",
+                            retryable=False,
+                        ) from exc
+                    if isinstance(chunk.get("usage"), dict):
+                        usage.update(chunk["usage"])
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = _message_text(delta.get("content"))
+                    if content:
+                        content_parts.append(content)
+                        emit("content_delta", content)
+                    reasoning = _reasoning_text(delta)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        emit("reasoning_delta", reasoning)
+                    for raw_call in delta.get("tool_calls") or []:
+                        index = int(raw_call.get("index", 0))
+                        state = tool_parts.setdefault(
+                            index,
+                            {"id": "", "name": "", "arguments": ""},
+                        )
+                        if raw_call.get("id"):
+                            state["id"] += str(raw_call["id"])
+                        function = raw_call.get("function") or {}
+                        if function.get("name"):
+                            state["name"] += str(function["name"])
+                        if function.get("arguments"):
+                            state["arguments"] += str(function["arguments"])
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            retryable = exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
+            raise LlmError(
+                f"model API returned HTTP {exc.code}: {detail}",
+                status_code=exc.code,
+                retryable=retryable,
+                retry_after_seconds=_retry_after_seconds(
+                    exc.headers.get("Retry-After")
+                ),
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise LlmError(
+                f"model API request failed: {reason}",
+                retryable=True,
+            ) from exc
+        except OSError as exc:
+            raise LlmError(
+                f"model API request failed: {exc}",
+                retryable=True,
+            ) from exc
+
+        calls = tuple(
+            ToolCall(
+                value["id"] or f"stream-call-{index}",
+                value["name"],
+                value["arguments"] or "{}",
+            )
+            for index, value in sorted(tool_parts.items())
+            if value["name"]
+        )
+        return ChatResponse(
+            content="".join(content_parts),
+            tool_calls=calls,
+            input_tokens=_usage_int(usage, "prompt_tokens", "input_tokens"),
+            output_tokens=_usage_int(
+                usage,
+                "completion_tokens",
+                "output_tokens",
+            ),
+            cached_input_tokens=_cached_input_tokens(usage),
+            reasoning="".join(reasoning_parts),
+            streamed=True,
         )
 
 
@@ -269,6 +407,34 @@ class RetryingLlmClient:
                 if delay > 0:
                     self.sleep(delay)
         raise AssertionError("retry loop exhausted without returning or raising")
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_event: StreamHandler | None = None,
+    ) -> ChatResponse:
+        stream = getattr(self.client, "chat_stream", None)
+        if not callable(stream):
+            return self.chat(messages, tools)
+        for attempt in range(1, self.max_attempts + 1):
+            self.last_attempts = attempt
+            try:
+                return stream(messages, tools, on_event)
+            except LlmError as exc:
+                if not exc.retryable or attempt >= self.max_attempts:
+                    raise
+                delay = (
+                    exc.retry_after_seconds
+                    if exc.retry_after_seconds is not None
+                    else min(
+                        self.max_delay_seconds,
+                        self.base_delay_seconds * (2 ** (attempt - 1)),
+                    )
+                )
+                if delay > 0:
+                    self.sleep(delay)
+        raise AssertionError("stream retry loop exhausted without returning or raising")
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)
@@ -431,6 +597,29 @@ def _message_text(value: object) -> str:
     return str(value)
 
 
+def _reasoning_text(message: object) -> str:
+    if not isinstance(message, dict):
+        return ""
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+    details = message.get("reasoning_details")
+    if isinstance(details, str):
+        return details
+    if isinstance(details, list):
+        parts: list[str] = []
+        for item in details:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                value = item.get("text") or item.get("content") or item.get("reasoning")
+                if value:
+                    parts.append(str(value))
+        return "".join(parts)
+    return ""
+
+
 def _retry_after_seconds(value: object) -> float | None:
     if value is None:
         return None
@@ -493,6 +682,7 @@ __all__ = [
     "OpenAICompatibleClient",
     "ProviderConfig",
     "RetryingLlmClient",
+    "StreamHandler",
     "ToolCall",
     "unwrap_llm_client",
 ]

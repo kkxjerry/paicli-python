@@ -8,6 +8,8 @@ receive typed failures, elapsed time, resource claims, and changed files.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import threading
 import time
@@ -16,6 +18,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Protocol
 
+from .command_policy import CommandGuard
+from .file_editing import (
+    FileMutation,
+    TextEdit,
+    patch_paths,
+    patch_preview,
+    prepare_patch,
+    prepare_text_edits,
+    sha256_file,
+    sha256_text,
+    unified_diff,
+    write_mutations,
+)
 from .tool_contracts import (
     ConcurrencyPolicy,
     ResourceAccess,
@@ -69,6 +84,18 @@ class ToolRegistry:
     """Register tools and provide one validated execution boundary."""
 
     MAX_PARALLEL_TOOLS = 8
+    MAX_WRITE_BYTES = 10_000_000
+    MAX_SEARCH_FILE_BYTES = 2_000_000
+    DEFAULT_IGNORED_DIRECTORIES = {
+        ".git",
+        ".paicli",
+        ".venv",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+    }
 
     def __init__(
         self,
@@ -569,7 +596,21 @@ class ToolRegistry:
                             "type": "string",
                             "minLength": 1,
                             "description": "File path",
-                        }
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional 1-indexed inclusive start line",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional 1-indexed inclusive end line",
+                        },
+                        "include_sha256": {
+                            "type": "boolean",
+                            "description": "Prefix the result with the file SHA-256",
+                        },
                     },
                     required=["path"],
                 ),
@@ -597,6 +638,11 @@ class ToolRegistry:
                             "type": "string",
                             "description": "New file content",
                         },
+                        "expected_sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-fA-F]{64}$",
+                            "description": "Optional optimistic-concurrency hash of the current file",
+                        },
                     },
                     required=["path", "content"],
                 ),
@@ -606,6 +652,105 @@ class ToolRegistry:
                 concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
                 resource_resolver=lambda args: self._path_access(
                     args["path"], ResourceMode.WRITE
+                ),
+            )
+        )
+        self._register(
+            ToolSpec(
+                "replace_text",
+                "Replace an exact text block in one file with optimistic concurrency checks.",
+                self._object_schema(
+                    {
+                        "path": {"type": "string", "minLength": 1},
+                        "old_text": {"type": "string", "minLength": 1},
+                        "new_text": {"type": "string"},
+                        "expected_replacements": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                        },
+                        "expected_sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-fA-F]{64}$",
+                        },
+                    },
+                    required=["path", "old_text", "new_text"],
+                ),
+                self._replace_text,
+                risk=ToolRisk.MEDIUM,
+                side_effect=ToolSideEffect.FILE_WRITE,
+                concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
+                resource_resolver=lambda args: self._path_access(
+                    args["path"], ResourceMode.WRITE
+                ),
+                previewer=self._preview_replace_text,
+            )
+        )
+        self._register(
+            ToolSpec(
+                "multi_edit",
+                "Atomically validate and apply multiple exact text edits.",
+                self._object_schema(
+                    {
+                        "edits": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "minLength": 1},
+                                    "old_text": {"type": "string", "minLength": 1},
+                                    "new_text": {"type": "string"},
+                                    "expected_replacements": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 1000,
+                                    },
+                                    "expected_sha256": {
+                                        "type": "string",
+                                        "pattern": "^[0-9a-fA-F]{64}$",
+                                    },
+                                },
+                                "required": ["path", "old_text", "new_text"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    required=["edits"],
+                ),
+                self._multi_edit,
+                risk=ToolRisk.MEDIUM,
+                side_effect=ToolSideEffect.FILE_WRITE,
+                concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
+                resource_resolver=self._multi_edit_accesses,
+                previewer=self._preview_multi_edit,
+            )
+        )
+        self._register(
+            ToolSpec(
+                "apply_patch",
+                "Apply a validated multi-file unified diff atomically per file.",
+                self._object_schema(
+                    {
+                        "patch": {"type": "string", "minLength": 1},
+                        "expected_sha256": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string",
+                                "pattern": "^[0-9a-fA-F]{64}$",
+                            },
+                        },
+                    },
+                    required=["patch"],
+                ),
+                self._apply_patch,
+                risk=ToolRisk.MEDIUM,
+                side_effect=ToolSideEffect.FILE_WRITE,
+                concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
+                resource_resolver=self._patch_accesses,
+                previewer=lambda args: patch_preview(
+                    self.project_root, str(args["patch"])
                 ),
             )
         )
@@ -630,6 +775,59 @@ class ToolRegistry:
                     args.get("path", "."),
                     ResourceMode.READ,
                     recursive=True,
+                ),
+            )
+        )
+        self._register(
+            ToolSpec(
+                "grep",
+                "Search project text files and return path:line matches.",
+                self._object_schema(
+                    {
+                        "pattern": {"type": "string", "minLength": 1},
+                        "path": {"type": "string", "minLength": 1},
+                        "file_glob": {"type": "string", "minLength": 1},
+                        "regex": {"type": "boolean"},
+                        "case_sensitive": {"type": "boolean"},
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                        },
+                    },
+                    required=["pattern"],
+                ),
+                self._grep,
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
+                resource_resolver=lambda args: self._path_access(
+                    args.get("path", "."), ResourceMode.READ, recursive=True
+                ),
+            )
+        )
+        self._register(
+            ToolSpec(
+                "glob",
+                "List project files matching a glob pattern.",
+                self._object_schema(
+                    {
+                        "pattern": {"type": "string", "minLength": 1},
+                        "path": {"type": "string", "minLength": 1},
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000,
+                        },
+                    },
+                    required=["pattern"],
+                ),
+                self._glob,
+                risk=ToolRisk.SAFE,
+                side_effect=ToolSideEffect.READ_ONLY,
+                concurrency=ConcurrencyPolicy.RESOURCE_LOCKED,
+                resource_resolver=lambda args: self._path_access(
+                    args.get("path", "."), ResourceMode.READ, recursive=True
                 ),
             )
         )
@@ -723,16 +921,146 @@ class ToolRegistry:
         path = self._safe_path(arguments["path"])
         if not path.is_file():
             raise ValueError(f"not a file: {arguments['path']}")
-        return path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8")
+        start = int(arguments.get("start_line", 1))
+        end_raw = arguments.get("end_line")
+        if end_raw is not None and int(end_raw) < start:
+            raise ValueError("end_line cannot be smaller than start_line")
+        if start != 1 or end_raw is not None:
+            lines = content.splitlines(keepends=True)
+            end = len(lines) if end_raw is None else int(end_raw)
+            content = "".join(lines[start - 1 : end])
+        if arguments.get("include_sha256"):
+            content = f"SHA256: {sha256_file(path)}\n" + content
+        return content
 
     def _write_file(self, arguments: dict[str, Any]) -> str:
         path = self._safe_path(arguments["path"])
-        content = arguments["content"]
-        if len(content.encode("utf-8")) > 1_000_000:
-            raise ValueError("content exceeds the 1 MB learning-project limit")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return f"Wrote {path.relative_to(self.project_root)}"
+        content = str(arguments["content"])
+        if len(content.encode("utf-8")) > self.MAX_WRITE_BYTES:
+            raise ValueError(
+                f"content exceeds write limit ({self.MAX_WRITE_BYTES} bytes)"
+            )
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+        expected = str(arguments.get("expected_sha256", "")).strip()
+        if expected:
+            if before is None:
+                raise ValueError("expected_sha256 was supplied but the file does not exist")
+            actual = sha256_text(before)
+            if actual.lower() != expected.lower():
+                raise ValueError(
+                    f"file hash changed: expected {expected}, found {actual}"
+                )
+        if before == content:
+            raise ValueError("write produces no textual change")
+        relative = path.relative_to(self.project_root).as_posix()
+        write_mutations(
+            self.project_root,
+            (FileMutation(relative, before, content),),
+        )
+        return f"Wrote {relative}"
+
+    def _replace_text(self, arguments: dict[str, Any]) -> ToolResult:
+        edit = TextEdit(
+            str(arguments["path"]),
+            str(arguments["old_text"]),
+            str(arguments["new_text"]),
+            int(arguments.get("expected_replacements", 1)),
+            str(arguments.get("expected_sha256", "")),
+        )
+        mutations = prepare_text_edits(self.project_root, (edit,))
+        if not mutations:
+            raise ValueError("replacement produces no textual change")
+        changed = write_mutations(self.project_root, mutations)
+        return ToolResult.success(
+            "replace_text",
+            "Applied exact replacement:\n" + "".join(item.diff for item in mutations),
+            changed_files=changed,
+        )
+
+    def _multi_edit(self, arguments: dict[str, Any]) -> ToolResult:
+        edits = tuple(
+            TextEdit(
+                str(item["path"]),
+                str(item["old_text"]),
+                str(item["new_text"]),
+                int(item.get("expected_replacements", 1)),
+                str(item.get("expected_sha256", "")),
+            )
+            for item in arguments["edits"]
+        )
+        mutations = prepare_text_edits(self.project_root, edits)
+        if not mutations:
+            raise ValueError("multi_edit produces no textual change")
+        changed = write_mutations(self.project_root, mutations)
+        return ToolResult.success(
+            "multi_edit",
+            "Applied edits:\n" + "".join(item.diff for item in mutations),
+            changed_files=changed,
+        )
+
+    def _apply_patch(self, arguments: dict[str, Any]) -> ToolResult:
+        mutations = prepare_patch(
+            self.project_root,
+            str(arguments["patch"]),
+            expected_sha256=arguments.get("expected_sha256"),
+        )
+        changed = write_mutations(self.project_root, mutations)
+        if not changed:
+            raise ValueError("patch produces no textual change")
+        return ToolResult.success(
+            "apply_patch",
+            "Applied patch:\n" + "".join(item.diff for item in mutations),
+            changed_files=changed,
+        )
+
+    def _preview_replace_text(self, arguments: dict[str, Any]) -> str:
+        mutations = prepare_text_edits(
+            self.project_root,
+            (
+                TextEdit(
+                    str(arguments["path"]),
+                    str(arguments["old_text"]),
+                    str(arguments["new_text"]),
+                    int(arguments.get("expected_replacements", 1)),
+                    str(arguments.get("expected_sha256", "")),
+                ),
+            ),
+        )
+        return "".join(item.diff for item in mutations) or "(no textual change)"
+
+    def _preview_multi_edit(self, arguments: dict[str, Any]) -> str:
+        edits = tuple(
+            TextEdit(
+                str(item["path"]),
+                str(item["old_text"]),
+                str(item["new_text"]),
+                int(item.get("expected_replacements", 1)),
+                str(item.get("expected_sha256", "")),
+            )
+            for item in arguments["edits"]
+        )
+        return "".join(
+            item.diff for item in prepare_text_edits(self.project_root, edits)
+        ) or "(no textual change)"
+
+    def _multi_edit_accesses(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[ResourceAccess, ...]:
+        return tuple(
+            self._path_access(item["path"], ResourceMode.WRITE)[0]
+            for item in arguments["edits"]
+        )
+
+    def _patch_accesses(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[ResourceAccess, ...]:
+        return tuple(
+            self._path_access(path, ResourceMode.WRITE)[0]
+            for path in patch_paths(str(arguments["patch"]))
+        )
 
     def _list_dir(self, arguments: dict[str, Any]) -> str:
         raw_path = arguments.get("path", ".")
@@ -750,6 +1078,79 @@ class ToolRegistry:
             for entry in entries
         )
 
+    def _grep(self, arguments: dict[str, Any]) -> str:
+        base = self._safe_path(arguments.get("path", "."))
+        if not base.exists():
+            raise ValueError(f"search path does not exist: {arguments.get('path', '.')}")
+        pattern = str(arguments["pattern"])
+        use_regex = bool(arguments.get("regex", False))
+        case_sensitive = bool(arguments.get("case_sensitive", False))
+        file_glob = str(arguments.get("file_glob", "*"))
+        max_results = int(arguments.get("max_results", 100))
+        flags = 0 if case_sensitive else re.IGNORECASE
+        compiled = re.compile(pattern if use_regex else re.escape(pattern), flags)
+        candidates = [base] if base.is_file() else sorted(base.rglob("*"))
+        results: list[str] = []
+        for path in candidates:
+            if not path.is_file() or self._ignored_search_path(path):
+                continue
+            relative = path.relative_to(self.project_root)
+            if file_glob and not (
+                relative.match(file_glob) or path.name == file_glob
+            ):
+                continue
+            try:
+                if path.stat().st_size > self.MAX_SEARCH_FILE_BYTES:
+                    continue
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in raw[:8192]:
+                continue
+            text = raw.decode("utf-8", errors="replace")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if compiled.search(line) is None:
+                    continue
+                results.append(
+                    f"{relative.as_posix()}:{line_number}:{line[:500]}"
+                )
+                if len(results) >= max_results:
+                    return "\n".join(results)
+        return "\n".join(results) if results else "(no matches)"
+
+    def _glob(self, arguments: dict[str, Any]) -> str:
+        base = self._safe_path(arguments.get("path", "."))
+        if not base.is_dir():
+            raise ValueError(f"glob path is not a directory: {arguments.get('path', '.')}")
+        pattern = str(arguments["pattern"])
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise ValueError("glob pattern must stay inside the project root")
+        max_results = int(arguments.get("max_results", 500))
+        results: list[str] = []
+        for path in sorted(base.glob(pattern)):
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if not resolved.is_relative_to(self.project_root):
+                continue
+            if self._ignored_search_path(resolved):
+                continue
+            relative = resolved.relative_to(self.project_root).as_posix()
+            results.append(relative + ("/" if resolved.is_dir() else ""))
+            if len(results) >= max_results:
+                break
+        return "\n".join(results) if results else "(no matches)"
+
+    def _ignored_search_path(self, path: Path) -> bool:
+        try:
+            relative = path.relative_to(self.project_root)
+        except ValueError:
+            return True
+        return any(
+            part in self.DEFAULT_IGNORED_DIRECTORIES for part in relative.parts
+        )
+
     def _execute_command(self, arguments: dict[str, Any]) -> str | ToolResult:
         if not self.allow_shell:
             raise ToolExecutionFailure(
@@ -760,6 +1161,13 @@ class ToolRegistry:
         command = arguments["command"].strip()
         if not command:
             raise ValueError("command cannot be empty")
+        blocked = CommandGuard.reject_reason(command)
+        if blocked:
+            raise ToolExecutionFailure(
+                blocked,
+                ToolErrorType.POLICY_DENIED,
+                retryable=False,
+            )
         try:
             completed = subprocess.run(
                 command,

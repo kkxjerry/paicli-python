@@ -19,6 +19,7 @@ MCP Server 的远程工具会被包装成普通 ToolSpec，因此 Agent 主循�
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import threading
 import urllib.request
@@ -83,38 +84,130 @@ class JsonRpcClient:
 
 
 class StdioTransport:
-    """通过子进程 stdin/stdout 传输每行一个 JSON-RPC 消息。"""
+    """通过子进程 stdin/stdout 传输每行一个 JSON-RPC 消息。
 
-    def __init__(self, command: list[str]) -> None:
+    A dedicated reader prevents a silent MCP process from blocking the whole
+    Agent tool gateway forever. Requests remain serialized because one stdio
+    stream cannot safely interleave request/response pairs without a dispatcher.
+    """
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        timeout_seconds: float = 30.0,
+        stderr_limit: int = 16_000,
+    ) -> None:
         if not command:
             raise ValueError("MCP command cannot be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("MCP timeout_seconds must be positive")
+        self.timeout_seconds = float(timeout_seconds)
+        self.stderr_limit = max(1_000, int(stderr_limit))
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            # 本期忽略 server stderr，生产实现通常应收集为可诊断日志。
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
         self._lock = threading.Lock()
+        self._responses: queue.Queue[str | None] = queue.Queue()
+        self._stderr_parts: list[str] = []
+        self._reader = threading.Thread(
+            target=self._read_stdout,
+            name="paicli-mcp-stdout",
+            daemon=True,
+        )
+        self._stderr_reader = threading.Thread(
+            target=self._read_stderr,
+            name="paicli-mcp-stderr",
+            daemon=True,
+        )
+        self._reader.start()
+        self._stderr_reader.start()
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.process.stdin is None or self.process.stdout is None:
             raise McpError("stdio transport is closed")
-        # stdin/stdout 是同一条流，写请求和读响应必须在同一把锁中串行完成。
         with self._lock:
-            self.process.stdin.write(json.dumps(payload) + "\n")
-            self.process.stdin.flush()
-            line = self.process.stdout.readline()
-        if not line:
-            raise McpError("MCP server closed stdout")
-        return json.loads(line)
+            if self.process.poll() is not None:
+                raise McpError(self._closed_message())
+            try:
+                self.process.stdin.write(json.dumps(payload) + "\n")
+                self.process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise McpError(self._closed_message()) from exc
+            try:
+                line = self._responses.get(timeout=self.timeout_seconds)
+            except queue.Empty as exc:
+                raise McpError(
+                    f"MCP stdio request timed out after {self.timeout_seconds:g} seconds"
+                ) from exc
+        if line is None:
+            raise McpError(self._closed_message())
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise McpError(f"MCP server returned invalid JSON: {line[:500]}") from exc
+        if not isinstance(value, dict):
+            raise McpError("MCP server response must be a JSON object")
+        return value
 
     def close(self) -> None:
-        # poll() 返回 None 代表子进程仍在运行。
+        # Close stdin first so cooperative servers can exit naturally, then
+        # enforce a bounded termination.  Popen leaves PIPE wrappers open unless
+        # the owner closes them explicitly.
+        if self.process.stdin is not None and not self.process.stdin.closed:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
         if self.process.poll() is None:
             self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is None or stream.closed:
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass
+        self._reader.join(timeout=1)
+        self._stderr_reader.join(timeout=1)
+
+    def _read_stdout(self) -> None:
+        stream = self.process.stdout
+        if stream is None:
+            self._responses.put(None)
+            return
+        try:
+            for line in stream:
+                self._responses.put(line.rstrip("\r\n"))
+        finally:
+            self._responses.put(None)
+
+    def _read_stderr(self) -> None:
+        stream = self.process.stderr
+        if stream is None:
+            return
+        for chunk in iter(lambda: stream.read(1024), ""):
+            if not chunk:
+                break
+            self._stderr_parts.append(chunk)
+            joined = "".join(self._stderr_parts)
+            if len(joined) > self.stderr_limit:
+                self._stderr_parts = [joined[-self.stderr_limit :]]
+
+    def _closed_message(self) -> str:
+        detail = "".join(self._stderr_parts).strip()
+        suffix = f"; stderr: {detail[-2_000:]}" if detail else ""
+        return f"MCP server exited with code {self.process.poll()}{suffix}"
 
 
 class StreamableHttpTransport:

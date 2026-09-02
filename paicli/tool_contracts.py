@@ -147,6 +147,7 @@ class ToolResult:
 
 ToolHandler = Callable[[dict[str, Any]], str | ToolResult]
 ResourceResolver = Callable[[dict[str, Any]], tuple[ResourceAccess, ...]]
+ToolPreviewer = Callable[[dict[str, Any]], str]
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,7 @@ class ToolSpec:
     concurrency: ConcurrencyPolicy = ConcurrencyPolicy.SERIAL
     timeout_seconds: float = 60.0
     resource_resolver: ResourceResolver | None = None
+    previewer: ToolPreviewer | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():

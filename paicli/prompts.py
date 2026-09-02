@@ -23,10 +23,11 @@ class PromptMode(str, Enum):
 
 @dataclass(frozen=True)
 class PromptContext:
-    """一次系统提示词组装所需的动态上下文。"""
+    """One deterministic set of prompt layers for a role."""
 
     mode: PromptMode = PromptMode.REACT
     project_root: Path = Path(".")
+    skill_index: tuple[str, ...] = ()
     skill_instructions: tuple[str, ...] = ()
     resource_index: tuple[str, ...] = ()
     runtime_notes: tuple[str, ...] = ()
@@ -47,16 +48,31 @@ class PromptRepository:
 class PromptAssembler:
     """将稳定的前缀层放在每轮动态上下文之前。"""
 
-    def __init__(self, repository: PromptRepository) -> None:
+    PROJECT_INSTRUCTION_FILES = ("AGENTS.md", ".paicli.md")
+
+    def __init__(
+        self,
+        repository: PromptRepository,
+        *,
+        max_project_chars: int = 24_000,
+    ) -> None:
+        if max_project_chars < 1:
+            raise ValueError("max_project_chars must be positive")
         self.repository = repository
+        self.max_project_chars = max_project_chars
 
     def assemble(self, context: PromptContext) -> str:
         # 列表顺序就是最终 prompt 顺序，不依赖 dict 或文件扫描的偶然顺序。
         layers: list[tuple[str, str]] = [
             ("base", self.repository.base_prompt),
             ("mode", self.repository.for_mode(context.mode)),
-            ("project", self._project_instructions(context.project_root)),
-            ("skills", "\n\n".join(context.skill_instructions)),
+            ("project", self.project_instructions(context.project_root)),
+            (
+                "skills",
+                "\n\n".join(
+                    (*context.skill_index, *context.skill_instructions)
+                ),
+            ),
             ("resources", "\n".join(context.resource_index)),
             ("runtime", "\n".join(context.runtime_notes)),
         ]
@@ -67,14 +83,61 @@ class PromptAssembler:
             if content.strip()
         )
 
-    @staticmethod
-    def _project_instructions(project_root: Path) -> str:
-        # AGENTS.md 优先级高于旧式 .paicli.md；找到第一个就停止。
-        for name in ("AGENTS.md", ".paicli.md"):
-            path = project_root / name
-            if path.is_file():
-                return path.read_text(encoding="utf-8", errors="replace")
+    def project_instructions(self, project_root: Path) -> str:
+        """Read one bounded project instruction file without following escapes."""
+
+        root = Path(project_root).resolve()
+        for name in self.PROJECT_INSTRUCTION_FILES:
+            candidate = root / name
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(root):
+                continue
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+            if len(content) <= self.max_project_chars:
+                return content
+            return (
+                content[: self.max_project_chars]
+                + "\n\n[Project instructions truncated by PaiCLI.]"
+            )
         return ""
+
+
+def assemble_system_prompt(
+    base_prompt: str,
+    *,
+    mode: PromptMode,
+    project_root: str | Path,
+    mode_prompt: str = "",
+    skill_index: Iterable[str] = (),
+    skill_instructions: Iterable[str] = (),
+    resource_index: Iterable[str] = (),
+    runtime_notes: Iterable[str] = (),
+    max_project_chars: int = 24_000,
+) -> str:
+    """Build the same ordered prompt layers for every Agent role."""
+
+    assembler = PromptAssembler(
+        PromptRepository(str(base_prompt), {mode: str(mode_prompt)}),
+        max_project_chars=max_project_chars,
+    )
+    return assembler.assemble(
+        PromptContext(
+            mode=mode,
+            project_root=Path(project_root),
+            skill_index=tuple(str(item) for item in skill_index if str(item).strip()),
+            skill_instructions=tuple(
+                str(item) for item in skill_instructions if str(item).strip()
+            ),
+            resource_index=tuple(
+                str(item) for item in resource_index if str(item).strip()
+            ),
+            runtime_notes=tuple(
+                str(item) for item in runtime_notes if str(item).strip()
+            ),
+        )
+    )
 
 
 def resource_index_lines(

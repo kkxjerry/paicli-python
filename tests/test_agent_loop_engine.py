@@ -148,6 +148,22 @@ class AgentLoopEngineTest(unittest.TestCase):
                         ),
                     ),
                     ChatResponse("Reported the syntax problem."),
+                    ChatResponse(
+                        "",
+                        (
+                            ToolCall(
+                                "call-2",
+                                "write_file",
+                                json.dumps(
+                                    {
+                                        "path": "bad.py",
+                                        "content": "def fixed():\n    pass\n",
+                                    }
+                                ),
+                            ),
+                        ),
+                    ),
+                    ChatResponse("Fixed the syntax problem."),
                 ]
             )
             events: list[tuple[str, str]] = []
@@ -163,6 +179,14 @@ class AgentLoopEngineTest(unittest.TestCase):
             diagnostics = [text for kind, text in events if kind == "diagnostics"]
             self.assertEqual(1, len(diagnostics))
             self.assertIn("bad.py:1", diagnostics[0])
+            self.assertIn(
+                "Post-edit diagnostics",
+                str(client.requests[2][-1]["content"]),
+            )
+            self.assertEqual(
+                "def fixed():\n    pass\n",
+                Path(directory, "bad.py").read_text(encoding="utf-8"),
+            )
 
     def test_custom_completion_policy_can_request_another_turn(self) -> None:
         class RejectDraftPolicy:

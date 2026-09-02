@@ -89,7 +89,7 @@ class StateRecoveryTest(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_failed_react_run_rolls_back_workspace_and_is_persisted(self) -> None:
+    def test_stopped_react_run_keeps_workspace_and_is_resumable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "value.txt"
@@ -113,6 +113,7 @@ class StateRecoveryTest(unittest.TestCase):
                 root,
                 enable_memory=False,
                 enable_trace=True,
+                enable_hitl=False,
                 max_steps=1,
             )
             store = RunStateStore(root / ".paicli" / "test-runs.db")
@@ -120,14 +121,15 @@ class StateRecoveryTest(unittest.TestCase):
             try:
                 result = coordinator.execute("react", "change value.txt")
 
-                self.assertEqual(StoredRunStatus.FAILED, result.status)
-                self.assertTrue(result.rolled_back)
-                self.assertEqual("before", target.read_text(encoding="utf-8"))
+                self.assertEqual(StoredRunStatus.STOPPED, result.status)
+                self.assertFalse(result.rolled_back)
+                self.assertEqual("after", target.read_text(encoding="utf-8"))
                 stored = store.load(result.run_id)
-                self.assertEqual(StoredRunStatus.FAILED, stored.status)
-                self.assertTrue(stored.metadata["rolled_back"])
+                self.assertEqual(StoredRunStatus.STOPPED, stored.status)
+                self.assertFalse(stored.metadata["rolled_back"])
+                self.assertIn(stored.run_id, {item.run_id for item in store.resumable_runs()})
                 summary = runtime.trace_store.run_summary(result.run_id)  # type: ignore[union-attr]
-                self.assertEqual("failed", summary["status"])
+                self.assertEqual("stopped", summary["status"])
             finally:
                 coordinator.close()
 
@@ -233,6 +235,7 @@ class StateRecoveryTest(unittest.TestCase):
                 root,
                 enable_memory=False,
                 enable_trace=False,
+                enable_hitl=False,
                 subagent_max_steps=4,
             )
             coordinator = RunCoordinator(
