@@ -78,6 +78,31 @@ default. Resume restores the last uncertain task boundary before retry.
 - Full Authorization headers are never intentionally stored.
 - Real-provider tests are opt-in and must not run on untrusted pull requests.
 
+## Hard policy and persistent permissions
+
+The base `ToolRegistry` enforces high-confidence destructive-command denial
+before starting a shell process. This invariant does not depend on HITL and
+cannot be overridden by an approval rule.
+
+The production application remains fail-closed when embedded as a library:
+side-effecting tools use HITL with deny behavior unless the caller explicitly
+chooses an approval mode/handler or opts out in an already isolated environment.
+Interactive approvals can persist exact or glob-shaped rules in
+`.paicli/permissions.json`. Last matching rule wins, but hard policy always has
+higher precedence.
+
+## Optional extension boundary
+
+Skill, MCP, browser, and web integrations are disabled until an explicit
+`--extensions-file` is supplied. MCP stdio calls have a request timeout and
+bounded stderr diagnostics. Browser tools are ordinary scoped MCP tools.
+
+Web access requires an explicit host allow-list. The fetcher validates URL
+scheme and credentials, resolves every host, rejects non-public addresses,
+revalidates each redirect and the final response URL, and bounds response size.
+This reduces SSRF exposure but does not make arbitrary Internet content trusted;
+repository/web prompt injection is still handled through tool scope and policy.
+
 ## Residual risks
 
 ### Shell is not a sandbox

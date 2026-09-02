@@ -18,13 +18,16 @@ configured provider. The default integration is Alibaba Cloud Model Studio
 - One shared `AgentLoopEngine` for ReAct and every SubAgent.
 - Real CLI modes: `react`, `plan`, and `team`.
 - DashScope, GLM, DeepSeek, StepFun, Kimi, and local/remote vLLM providers.
-- Function Calling with execution-time JSON Schema validation.
+- Function Calling with execution-time JSON Schema validation and SSE streaming
+  for content, reasoning fields, fragmented Tool Calls, and provider usage.
 - LLM-generated plans with bounded JSON repair and deterministic DAG checks.
 - Isolated Worker, Reviewer, and Aggregator histories and tool capabilities.
 - Reviewer approval based on actual changed-file reads, not worker narration.
 - Reviewer `changes_requested` retries only the current task, with a hard limit.
-- HITL for writes and commands, unified diff previews, hard command policy, and
-  redacted audit records.
+- Precise `replace_text`, `multi_edit`, `apply_patch`, `grep`, and `glob` tools;
+  ranged reads and optimistic SHA checks avoid unnecessary whole-file rewrites.
+- HITL for writes and commands, unified diff previews, unconditional hard command
+  policy, persistent exact/pattern permissions, and redacted audit records.
 - BEFORE/AFTER workspace snapshots, rollback policy, SQLite checkpoints, and
   resumable interrupted Plan/Team runs.
 - Parent-child traces for model calls, tool calls, spans, Token usage, latency,
@@ -33,6 +36,8 @@ configured provider. The default integration is Alibaba Cloud Model Studio
   + optional embeddings, fused through RRF and returned with source line spans.
 - Versioned long-term memory with IDs, provenance, verification, staleness, and
   soft deletion.
+- Project instruction loading for every role, optional real stdio LSP diagnostics,
+  role-specific model providers, and explicitly configured Skill/MCP/Web extensions.
 - A fixed coding benchmark and baseline/candidate comparison reports.
 
 The original `phase-xx` educational tags remain available. Current `develop`
@@ -123,6 +128,78 @@ python -m paicli \
 confirmation before each command and file mutation. A command preview or
 unified diff is displayed before approval.
 
+The local coding toolset also includes:
+
+```text
+read_file      line ranges + optional SHA-256
+replace_text   exact optimistic replacement
+multi_edit     validate all replacements before one atomic file write
+apply_patch    validate a multi-file unified diff before applying it
+grep           bounded literal/regex search without shell
+glob           bounded project-root path matching without shell
+```
+
+Hard command denial is enforced by the base ToolRegistry even when PaiCLI is
+embedded as a library without interactive HITL. Persist an exact or glob-shaped
+approval from the prompt with `a` or `p`; rules are stored in
+`.paicli/permissions.json`. Choose another file with `--permission-file`.
+
+## Project instructions and diagnostics
+
+`AGENTS.md` (preferred) or `.paicli.md` is loaded into the system prompt for
+ReAct, Planner, Worker, Reviewer, and Aggregator. The content is bounded and kept
+in a separate prompt layer rather than concatenated into user messages.
+
+Python edits always receive an `ast.parse` syntax check. Configure a real stdio
+language server when available:
+
+```bash
+python -m paicli \
+  --python-lsp-command "pyright-langserver --stdio" \
+  --lsp-timeout-seconds 8 \
+  ...
+```
+
+Published diagnostics are returned to the Agent and block completion while an
+error remains. If the optional server cannot start, the runtime falls back to
+the deterministic syntax checker.
+
+## Role-specific models
+
+The default `--provider` remains the ReAct/fallback provider. Plan and Team can
+select independent providers without changing orchestration code:
+
+```bash
+python -m paicli \
+  --provider dashscope \
+  --planner-provider dashscope \
+  --worker-provider deepseek \
+  --reviewer-provider glm \
+  --aggregator-provider dashscope \
+  ...
+```
+
+Each role client retains its own retry, Trace, Token, and pricing records.
+
+## Optional Skill, MCP, browser, and web extensions
+
+Optional external services never start merely because their modules exist. Copy
+`extensions.example.json`, remove unused entries, and enable it explicitly:
+
+```bash
+python -m paicli --extensions-file ./extensions.json ...
+```
+
+- Skill roots add a bounded index to every role prompt and register `load_skill`.
+- MCP stdio/HTTP servers register namespaced `mcp__server__tool` tools. Stdio
+  requests have a hard timeout and bounded stderr capture.
+- Browser automation is supplied by an explicitly configured browser MCP server,
+  such as Chrome DevTools MCP.
+- Web access is disabled by default. Enabled fetch/search requires a host
+  allow-list, public DNS addresses, redirect-hop validation, and bounded bodies.
+
+See `extensions.example.json` and [docs/p0-p2-hardening.md](docs/p0-p2-hardening.md).
+
 ## Run Plan mode
 
 Non-interactive execution after deterministic plan validation:
@@ -198,7 +275,8 @@ Important defaults:
 - `approval-mode=ask` is interactive; `deny` fails closed; `allow` is an
   explicit automation choice and should be used only in disposable workspaces.
 - Obvious destructive command patterns are denied before human approval.
-- Failed/partial runs roll back to their BEFORE snapshot by default.
+- Failed/partial runs ask before restoring the BEFORE snapshot by default;
+  stopped runs caused by iteration, stagnation, or Token limits keep their workspace.
 - API keys and common secret fields are redacted from traces and audit logs.
 
 See [SECURITY.md](SECURITY.md) for the trust boundary and residual risks.
@@ -234,6 +312,10 @@ Before a mutating task starts, PaiCLI stores a task-level snapshot. After a
 process interruption it restores the uncertain task boundary before retrying.
 If that snapshot is missing, it restores the complete run snapshot and restarts
 the DAG rather than blindly replaying a possibly committed side effect.
+Oversized, unreadable, or over-budget files are recorded as skipped and are
+preserved during restore instead of preventing the Agent from starting. Old
+unreferenced snapshots are pruned according to `--snapshot-retention`; snapshots
+needed by resumable runs are retained.
 
 Detailed semantics: [docs/recovery.md](docs/recovery.md).
 

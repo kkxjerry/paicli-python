@@ -22,6 +22,7 @@ import json
 import queue
 import subprocess
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -115,6 +116,7 @@ class StdioTransport:
         self._lock = threading.Lock()
         self._responses: queue.Queue[str | None] = queue.Queue()
         self._stderr_parts: list[str] = []
+        self.notifications: list[dict[str, Any]] = []
         self._reader = threading.Thread(
             target=self._read_stdout,
             name="paicli-mcp-stdout",
@@ -131,6 +133,8 @@ class StdioTransport:
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.process.stdin is None or self.process.stdout is None:
             raise McpError("stdio transport is closed")
+        expected_id = payload.get("id")
+        deadline = time.monotonic() + self.timeout_seconds
         with self._lock:
             if self.process.poll() is not None:
                 raise McpError(self._closed_message())
@@ -139,21 +143,43 @@ class StdioTransport:
                 self.process.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
                 raise McpError(self._closed_message()) from exc
-            try:
-                line = self._responses.get(timeout=self.timeout_seconds)
-            except queue.Empty as exc:
-                raise McpError(
-                    f"MCP stdio request timed out after {self.timeout_seconds:g} seconds"
-                ) from exc
-        if line is None:
-            raise McpError(self._closed_message())
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise McpError(f"MCP server returned invalid JSON: {line[:500]}") from exc
-        if not isinstance(value, dict):
-            raise McpError("MCP server response must be a JSON object")
-        return value
+
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise McpError(
+                        f"MCP stdio request timed out after {self.timeout_seconds:g} seconds"
+                    )
+                try:
+                    line = self._responses.get(timeout=remaining)
+                except queue.Empty as exc:
+                    raise McpError(
+                        f"MCP stdio request timed out after {self.timeout_seconds:g} seconds"
+                    ) from exc
+                if line is None:
+                    raise McpError(self._closed_message())
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise McpError(
+                        f"MCP server returned invalid JSON: {line[:500]}"
+                    ) from exc
+                if not isinstance(value, dict):
+                    raise McpError("MCP server response must be a JSON object")
+
+                # MCP notifications have no id and may legally arrive before a
+                # response. Preserve a bounded diagnostic history and continue
+                # waiting for the response belonging to this serialized call.
+                if "id" not in value:
+                    self.notifications.append(value)
+                    if len(self.notifications) > 100:
+                        del self.notifications[:-100]
+                    continue
+                if expected_id is not None and value.get("id") != expected_id:
+                    raise McpError(
+                        "MCP stdio response id does not match the active request"
+                    )
+                return value
 
     def close(self) -> None:
         # Close stdin first so cooperative servers can exit naturally, then
@@ -307,7 +333,7 @@ class McpClient:
             {
                 "protocolVersion": self.protocol_version,
                 "capabilities": {},
-                "clientInfo": {"name": "paicli-python", "version": "0.1.0"},
+                "clientInfo": {"name": "paicli-python", "version": "1.1.0"},
             },
         )
         self.capabilities = dict(result.get("capabilities", {}))

@@ -111,7 +111,7 @@ from .tools import (
     ToolSpec,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 _LAZY_EXPORTS = {
     "EvalSuite": (".evaluation", "EvalSuite"),

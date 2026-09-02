@@ -92,8 +92,8 @@ This policy prefers duplicated model inference over duplicated side effects.
 ## Rollback policy
 
 ```text
-always  restore BEFORE on failed/partial run; production default
-ask     call an interactive decision handler
+always  restore BEFORE on every failed/partial run
+ask     call an interactive decision handler; CLI default
 never   retain the workspace; useful only for inspection/evaluation
 ```
 
@@ -103,9 +103,15 @@ CLI:
 --rollback-on-failure always|ask|never
 ```
 
+Runs stopped by iteration, stagnation, or per-Agent Token limits use the
+`STOPPED` state. They keep the workspace and remain resumable instead of being
+silently treated as failures and automatically rolled back.
+
 Snapshots may be disabled explicitly with `--no-snapshot`, but a run interrupted
 inside an uncertain side-effect Task may then be impossible to resume safely.
-PaiCLI reports that condition instead of blindly replaying the Task.
+PaiCLI reports that condition instead of blindly replaying the Task. Oversized or
+unreadable files are recorded as skipped and protected during restore, so they do
+not block run startup or disappear during rollback.
 
 ## Idempotency boundary
 

@@ -155,6 +155,31 @@ class ExtensionTest(unittest.TestCase):
             transport.close()
         self.assertLess(time.monotonic() - started, 3)
 
+    def test_mcp_stdio_ignores_notification_before_matching_response(self) -> None:
+        script = (
+            "import json,sys; "
+            "request=json.loads(sys.stdin.readline()); "
+            "print(json.dumps({'jsonrpc':'2.0','method':'notifications/tools/list_changed','params':{}}), flush=True); "
+            "print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'ok':True}}), flush=True)"
+        )
+        transport = StdioTransport(
+            [sys.executable, "-c", script],
+            timeout_seconds=2,
+        )
+        try:
+            response = transport.request(
+                {"jsonrpc": "2.0", "id": 7, "method": "tools/list"}
+            )
+        finally:
+            transport.close()
+
+        self.assertEqual(7, response["id"])
+        self.assertEqual({"ok": True}, response["result"])
+        self.assertEqual(
+            "notifications/tools/list_changed",
+            transport.notifications[0]["method"],
+        )
+
     def test_install_extensions_leaves_default_registry_unchanged_when_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             registry = ToolRegistry(directory)
