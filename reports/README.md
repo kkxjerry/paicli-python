@@ -1,4 +1,4 @@
-# PaiCLI 1.0 release evidence
+# PaiCLI release evidence
 
 This directory contains reproducible, credential-free result artifacts from the
 fixed suite in `eval/suites/coding-smoke.json`. The suite was executed with the
@@ -138,3 +138,72 @@ paicli-eval stability \
 Real-model output is nondeterministic. A rerun is valid evidence only when the
 suite version, provider/model, budgets, initial files, and deterministic
 assertions remain unchanged.
+
+## PaiCLI 1.1.0 evidence
+
+The 1.1 product code evaluated by the final reports is:
+
+```text
+7022eaa31171867ec3203a1d2c4dc2ebf739058f
+```
+
+Final-code reports:
+
+| File | Purpose |
+|---|---|
+| `dashscope-1.1-run-02.json` | First complete final-code run assembled from three task fragments. |
+| `dashscope-1.1-run-03.json` | Second complete final-code run. |
+| `dashscope-1.1-run-04.json` | Third complete final-code run. |
+| `dashscope-1.1-stability.json` | Aggregate over the three final-code runs. |
+| `1.0-vs-1.1.json` | Same-suite comparison of a successful 1.0 report and the second final 1.1 run. |
+| `fragments/` | Per-task source reports used by `paicli-eval merge`; all carry the same final Git SHA. |
+
+A pre-fix report is also retained:
+
+```text
+reports/dashscope-1.1-run-01.json
+Git commit: eb6f0f31e6fc11749f814ae4f23c046b83a03b69
+Result: 2/3 Tasks, 5/7 assertions
+```
+
+Its Team case repeated unchanged reads until the stagnation guard stopped the
+worker. The report was not included in final-code stability because its Git SHA
+differs. It directly motivated the one-round-early stagnation warning added
+before `7022eaa`.
+
+Final-code stability:
+
+```text
+Fully successful runs: 3 / 3  (100%)
+Tasks succeeded:        9 / 9  (100%)
+Assertions passed:     21 / 21 (100%)
+Model errors:                 0
+Model calls:                183
+Tool calls:                 140
+Tool errors:                 17
+Input Tokens:            515584
+Output Tokens:            23080
+Estimated cost:      CNY 0.1855264
+```
+
+The release evaluation used a 45-second provider request timeout. Long suites
+were run as independently persisted task fragments:
+
+```bash
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --task-id plan-add-subtract \
+  --output reports/fragments/run-plan.json
+
+paicli-eval merge \
+  reports/fragments/run-react.json \
+  reports/fragments/run-plan.json \
+  reports/fragments/run-team.json \
+  --suite eval/suites/coding-smoke.json \
+  --output reports/dashscope-1.1-run.json
+```
+
+The merge operation rejects mixed suite versions, providers, models, Git
+commits, duplicate cases, and incomplete task sets. Full interpretation and
+release boundaries are in `docs/1.1.0-acceptance.md`.

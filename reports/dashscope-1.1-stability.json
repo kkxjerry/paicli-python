@@ -1,0 +1,200 @@
+{
+  "cases": {
+    "plan-add-subtract": {
+      "assertion_pass_rate": 1.0,
+      "assertions": 9,
+      "assertions_passed": 9,
+      "attempts": 3,
+      "duration_ms": {
+        "max": 89919,
+        "mean": 77448.33333333333,
+        "median": 72516,
+        "min": 69910
+      },
+      "failed_runs": [],
+      "input_tokens": {
+        "max": 85506,
+        "mean": 70511.0,
+        "median": 64908,
+        "min": 61119
+      },
+      "mode": "plan",
+      "model_calls": {
+        "max": 28,
+        "mean": 25.333333333333332,
+        "median": 25,
+        "min": 23
+      },
+      "output_tokens": {
+        "max": 3570,
+        "mean": 3412.6666666666665,
+        "median": 3494,
+        "min": 3174
+      },
+      "statuses": {
+        "succeeded": 3
+      },
+      "success_rate": 1.0,
+      "successes": 3,
+      "tool_calls": {
+        "max": 21,
+        "mean": 18.666666666666668,
+        "median": 19,
+        "min": 16
+      }
+    },
+    "react-read-marker": {
+      "assertion_pass_rate": 1.0,
+      "assertions": 3,
+      "assertions_passed": 3,
+      "attempts": 3,
+      "duration_ms": {
+        "max": 3742,
+        "mean": 2301.6666666666665,
+        "median": 1625,
+        "min": 1538
+      },
+      "failed_runs": [],
+      "input_tokens": {
+        "max": 3287,
+        "mean": 3287.0,
+        "median": 3287,
+        "min": 3287
+      },
+      "mode": "react",
+      "model_calls": {
+        "max": 2,
+        "mean": 2.0,
+        "median": 2,
+        "min": 2
+      },
+      "output_tokens": {
+        "max": 31,
+        "mean": 31.0,
+        "median": 31,
+        "min": 31
+      },
+      "statuses": {
+        "succeeded": 3
+      },
+      "success_rate": 1.0,
+      "successes": 3,
+      "tool_calls": {
+        "max": 1,
+        "mean": 1.0,
+        "median": 1,
+        "min": 1
+      }
+    },
+    "team-fix-division": {
+      "assertion_pass_rate": 1.0,
+      "assertions": 9,
+      "assertions_passed": 9,
+      "attempts": 3,
+      "duration_ms": {
+        "max": 122848,
+        "mean": 108427.0,
+        "median": 113085,
+        "min": 89348
+      },
+      "failed_runs": [],
+      "input_tokens": {
+        "max": 126521,
+        "mean": 98063.33333333333,
+        "median": 85102,
+        "min": 82567
+      },
+      "mode": "team",
+      "model_calls": {
+        "max": 41,
+        "mean": 33.666666666666664,
+        "median": 31,
+        "min": 29
+      },
+      "output_tokens": {
+        "max": 4843,
+        "mean": 4249.666666666667,
+        "median": 4394,
+        "min": 3512
+      },
+      "statuses": {
+        "succeeded": 3
+      },
+      "success_rate": 1.0,
+      "successes": 3,
+      "tool_calls": {
+        "max": 36,
+        "mean": 27.0,
+        "median": 23,
+        "min": 22
+      }
+    }
+  },
+  "created_at": 1788325519.15974,
+  "git_commits": [
+    "7022eaa31171867ec3203a1d2c4dc2ebf739058f"
+  ],
+  "kind": "stability",
+  "metrics": {
+    "assertion_pass_rate": 1.0,
+    "assertions": 21,
+    "assertions_passed": 21,
+    "fully_successful_runs": 3,
+    "run_count": 3,
+    "run_success_rate": 1.0,
+    "task_attempts": 9,
+    "task_success_rate": 1.0,
+    "tasks_succeeded": 9,
+    "total_estimated_cost_cny": 0.18552640000000004,
+    "total_input_tokens": 515584,
+    "total_model_calls": 183,
+    "total_model_errors": 0,
+    "total_output_tokens": 23080,
+    "total_tool_calls": 140,
+    "total_tool_errors": 17,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "runs": [
+    {
+      "assertion_pass_rate": 1.0,
+      "average_duration_ms": 65663.0,
+      "created_at": 1788325029.2666628,
+      "estimated_cost_cny": 0.07223,
+      "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+      "input_tokens": 194716,
+      "model_calls": 68,
+      "output_tokens": 7995,
+      "success_rate": 1.0,
+      "tool_calls": 56
+    },
+    {
+      "assertion_pass_rate": 1.0,
+      "average_duration_ms": 60268.333333333336,
+      "created_at": 1788325260.211278,
+      "estimated_cost_cny": 0.060108400000000006,
+      "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+      "input_tokens": 173895,
+      "model_calls": 59,
+      "output_tokens": 7037,
+      "success_rate": 1.0,
+      "tool_calls": 45
+    },
+    {
+      "assertion_pass_rate": 1.0,
+      "average_duration_ms": 62245.666666666664,
+      "created_at": 1788325495.151637,
+      "estimated_cost_cny": 0.053188,
+      "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+      "input_tokens": 146973,
+      "model_calls": 56,
+      "output_tokens": 8048,
+      "success_rate": 1.0,
+      "tool_calls": 39
+    }
+  ],
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

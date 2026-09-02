@@ -1,0 +1,249 @@
+{
+  "cases": [
+    {
+      "answer": "PAICLI_FIXED_EVAL_MARKER_2026",
+      "assertions": [
+        {
+          "detail": "expected answer to contain 'PAICLI_FIXED_EVAL_MARKER_2026'",
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 1850,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 0,
+        "elapsed_ms": 1796,
+        "error": "",
+        "estimated_cost_cny": 0.0026916000000000006,
+        "input_tokens": 3287,
+        "metadata": {
+          "after_snapshot_id": "78adaf43a3244834a070c6f87dd6e9ae",
+          "before_snapshot_id": "2ccc4c10404741a391bc1ea17b6f8f63",
+          "budget": {
+            "cached_input_tokens": 0,
+            "elapsed_seconds": 1.793825,
+            "estimated_cost_cny": 0.0026916,
+            "input_tokens": 3287,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 90.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 2,
+            "model_errors": 0,
+            "output_tokens": 31,
+            "tool_calls": 1,
+            "tool_errors": 0,
+            "total_tokens": 3318,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "react",
+        "model": "qwen-plus",
+        "model_calls": 2,
+        "model_duration_ms": 1783,
+        "model_errors": 0,
+        "output_tokens": 31,
+        "priced_model_calls": 2,
+        "provider": "dashscope",
+        "run_id": "run_8bc9e597856d4338906df22832c73076",
+        "status": "succeeded",
+        "tool_calls": 1,
+        "tool_duration_ms": 0,
+        "tool_errors": 0,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "react",
+      "run_id": "run_8bc9e597856d4338906df22832c73076",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "react-read-marker"
+    },
+    {
+      "answer": "✅ **Completed work**:  \n- Added `subtract(a, b)` function to `calculator.py` (now contains both `add` and `subtract`, with type annotations initially, then removed for Python 2.7 compatibility).  \n- Added `test_subtract` method to `test_calculator.py` asserting `subtract(5, 3) == 2`, and updated the import to include `subtract`.  \n- Both files were modified to remove type annotations (`-> int`, `: int`) to ensure unittest compatibility with Python 2.7.  \n- Full unittest suite (`python -m unittest test_calculator`) ran successfully: **2 tests passed**, exit code `0`, output `\"OK\"`.\n\n🔹 **Changed files**:  \n- `calculator.py` — added `subtract`, then stripped type annotations.  \n- `test_calculator.py` — added `test_subtract`, imported `subtract`, stripped type annotations from test methods.\n\n❌ **No failed or skipped tasks** — all 7 tasks completed successfully with verified outcomes and passing tests.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [
+        "calculator.py",
+        "test_calculator.py"
+      ],
+      "duration_ms": 145689,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 124352,
+        "elapsed_ms": 145241,
+        "error": "",
+        "estimated_cost_cny": 0.0370416,
+        "input_tokens": 153759,
+        "metadata": {
+          "after_snapshot_id": "06357a580d464affae8ae30c9a750abe",
+          "before_snapshot_id": "82ea25608ce84d85ab6f42493bf3c237",
+          "budget": {
+            "cached_input_tokens": 124352,
+            "elapsed_seconds": 145.236018,
+            "estimated_cost_cny": 0.0370416,
+            "input_tokens": 153759,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 240.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 58,
+            "model_errors": 0,
+            "output_tokens": 6758,
+            "tool_calls": 47,
+            "tool_errors": 3,
+            "total_tokens": 160517,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "plan",
+        "model": "qwen-plus",
+        "model_calls": 58,
+        "model_duration_ms": 149316,
+        "model_errors": 0,
+        "output_tokens": 6758,
+        "priced_model_calls": 58,
+        "provider": "dashscope",
+        "run_id": "run_51740c484af34660a77b04ed59e7f533",
+        "status": "succeeded",
+        "tool_calls": 47,
+        "tool_duration_ms": 3922,
+        "tool_errors": 3,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "plan",
+      "run_id": "run_51740c484af34660a77b04ed59e7f533",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "plan-add-subtract"
+    },
+    {
+      "answer": "No work was completed. The initial `read_files` task failed due to no observable progress after three identical rounds, and all subsequent tasks (`fix_divide`, `update_tests`, `verify_suite`) were skipped as they depend on the failed read. No files were changed. The requested fix to `divide(a, b)` and corresponding test updates were not performed.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": false
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 18048,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 2752,
+        "elapsed_ms": 17666,
+        "error": "",
+        "estimated_cost_cny": 0.0034692,
+        "input_tokens": 5031,
+        "metadata": {
+          "after_snapshot_id": "76febc1f936342ed9d59ea1990fc6158",
+          "before_snapshot_id": "3469fb32dc884416949515f1e7b7ef2b",
+          "budget": {
+            "cached_input_tokens": 2752,
+            "elapsed_seconds": 17.662521,
+            "estimated_cost_cny": 0.0034692,
+            "input_tokens": 5031,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 300.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 5,
+            "model_errors": 0,
+            "output_tokens": 823,
+            "tool_calls": 6,
+            "tool_errors": 0,
+            "total_tokens": 5854,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "team",
+        "model": "qwen-plus",
+        "model_calls": 5,
+        "model_duration_ms": 17558,
+        "model_errors": 0,
+        "output_tokens": 823,
+        "priced_model_calls": 5,
+        "provider": "dashscope",
+        "run_id": "run_dfd6c0bfef11403381b0887666fc0f02",
+        "status": "failed",
+        "tool_calls": 6,
+        "tool_duration_ms": 13,
+        "tool_errors": 0,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "team",
+      "run_id": "run_dfd6c0bfef11403381b0887666fc0f02",
+      "run_status": "failed",
+      "success": false,
+      "task_id": "team-fix-division"
+    }
+  ],
+  "created_at": 1788323177.740535,
+  "git_commit": "eb6f0f31e6fc11749f814ae4f23c046b83a03b69",
+  "metrics": {
+    "assertion_pass_rate": 0.7142857142857143,
+    "assertions": 7,
+    "assertions_passed": 5,
+    "average_duration_ms": 55195.666666666664,
+    "estimated_cost_cny": 0.0432024,
+    "input_tokens": 162077,
+    "model_calls": 65,
+    "model_errors": 0,
+    "output_tokens": 7612,
+    "success_rate": 0.6666666666666666,
+    "tasks": 3,
+    "tasks_succeeded": 2,
+    "tool_calls": 54,
+    "tool_errors": 3,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

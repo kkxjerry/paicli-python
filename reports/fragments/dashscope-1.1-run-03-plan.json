@@ -1,0 +1,107 @@
+{
+  "cases": [
+    {
+      "answer": "✅ **Completed work**:  \n- Added `subtract(a, b)` function to `calculator.py` (now contains both `add` and `subtract`, with type annotations removed to ensure Python 3 compatibility).  \n- Added deterministic unittest `test_subtract` to `test_calculator.py` (imports `subtract`, asserts `self.assertEqual(2, subtract(5, 3))`, with type annotations removed).  \n- Ran full unittest suite (`python -m unittest test_calculator.py`) — exited successfully with code `0`; **2 tests passed**.\n\n🔄 **Changed files**:  \n- `calculator.py` (updated function definitions, type annotations removed)  \n- `test_calculator.py` (updated import, added `test_subtract`, type annotations removed)\n\n⚠️ **No failed or skipped tasks**: All 5 tasks completed successfully per the plan and evidence. The test suite passes end-to-end.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [
+        "calculator.py",
+        "test_calculator.py"
+      ],
+      "duration_ms": 89919,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 65536,
+        "elapsed_ms": 89495,
+        "error": "",
+        "estimated_cost_cny": 0.022964000000000002,
+        "input_tokens": 85506,
+        "metadata": {
+          "after_snapshot_id": "4a84fb224894462ea36ec000329dc76b",
+          "before_snapshot_id": "5050f296d6d84745821a60816a3c01e2",
+          "budget": {
+            "cached_input_tokens": 65536,
+            "elapsed_seconds": 89.471161,
+            "estimated_cost_cny": 0.022964,
+            "input_tokens": 85506,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 240.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 28,
+            "model_errors": 0,
+            "output_tokens": 3494,
+            "tool_calls": 21,
+            "tool_errors": 3,
+            "total_tokens": 89000,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "plan",
+        "model": "qwen-plus",
+        "model_calls": 28,
+        "model_duration_ms": 81223,
+        "model_errors": 0,
+        "output_tokens": 3494,
+        "priced_model_calls": 28,
+        "provider": "dashscope",
+        "run_id": "run_0d240f2f64b84379a8a922212f328cd5",
+        "status": "succeeded",
+        "tool_calls": 21,
+        "tool_duration_ms": 16051,
+        "tool_errors": 3,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "plan",
+      "run_id": "run_0d240f2f64b84379a8a922212f328cd5",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "plan-add-subtract"
+    }
+  ],
+  "created_at": 1788325152.764155,
+  "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+  "metrics": {
+    "assertion_pass_rate": 1.0,
+    "assertions": 3,
+    "assertions_passed": 3,
+    "average_duration_ms": 89919.0,
+    "estimated_cost_cny": 0.022964000000000002,
+    "input_tokens": 85506,
+    "model_calls": 28,
+    "model_errors": 0,
+    "output_tokens": 3494,
+    "success_rate": 1.0,
+    "tasks": 1,
+    "tasks_succeeded": 1,
+    "tool_calls": 21,
+    "tool_errors": 3,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

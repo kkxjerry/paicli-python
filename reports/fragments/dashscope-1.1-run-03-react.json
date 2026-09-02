@@ -1,0 +1,94 @@
+{
+  "cases": [
+    {
+      "answer": "PAICLI_FIXED_EVAL_MARKER_2026",
+      "assertions": [
+        {
+          "detail": "expected answer to contain 'PAICLI_FIXED_EVAL_MARKER_2026'",
+          "kind": "answer_contains",
+          "passed": true
+        }
+      ],
+      "changed_files": [],
+      "duration_ms": 1538,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 1600,
+        "elapsed_ms": 1475,
+        "error": "",
+        "estimated_cost_cny": 0.0014116000000000003,
+        "input_tokens": 3287,
+        "metadata": {
+          "after_snapshot_id": "b8261a8f37cc446f83cfcf421863a9db",
+          "before_snapshot_id": "c85d2f0c926a4da0a7bb230417961910",
+          "budget": {
+            "cached_input_tokens": 1600,
+            "elapsed_seconds": 1.472407,
+            "estimated_cost_cny": 0.0014116,
+            "input_tokens": 3287,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 90.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 2,
+            "model_errors": 0,
+            "output_tokens": 31,
+            "tool_calls": 1,
+            "tool_errors": 0,
+            "total_tokens": 3318,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "react",
+        "model": "qwen-plus",
+        "model_calls": 2,
+        "model_duration_ms": 1452,
+        "model_errors": 0,
+        "output_tokens": 31,
+        "priced_model_calls": 2,
+        "provider": "dashscope",
+        "run_id": "run_1cab2a6ff3904595b391841f911884c8",
+        "status": "succeeded",
+        "tool_calls": 1,
+        "tool_duration_ms": 0,
+        "tool_errors": 0,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "react",
+      "run_id": "run_1cab2a6ff3904595b391841f911884c8",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "react-read-marker"
+    }
+  ],
+  "created_at": 1788325062.1416519,
+  "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+  "metrics": {
+    "assertion_pass_rate": 1.0,
+    "assertions": 1,
+    "assertions_passed": 1,
+    "average_duration_ms": 1538.0,
+    "estimated_cost_cny": 0.0014116000000000003,
+    "input_tokens": 3287,
+    "model_calls": 2,
+    "model_errors": 0,
+    "output_tokens": 31,
+    "success_rate": 1.0,
+    "tasks": 1,
+    "tasks_succeeded": 1,
+    "tool_calls": 1,
+    "tool_errors": 0,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

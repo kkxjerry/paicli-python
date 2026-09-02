@@ -1,0 +1,107 @@
+{
+  "cases": [
+    {
+      "answer": "All tasks completed successfully. The `divide(a, b)` function in `calculator.py` now raises `ValueError('division by zero')` when `b == 0`. The test suite in `test_calculator.py` was updated to include two deterministic tests: one for normal division (`6.0 / 3.0 == 2.0`) and one for division by zero (verifying the exact `ValueError` message). Both files were modified as intended:\n\n- ✅ Changed files: `calculator.py`, `test_calculator.py`  \n- ✅ Full unittest suite passes (`Ran 2 tests`, exit code 0)  \n- ✅ Changes are minimal and precise — no extraneous edits  \n\nNo tasks failed or were skipped.",
+      "assertions": [
+        {
+          "detail": "checked calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "checked test_calculator.py",
+          "kind": "file_contains",
+          "passed": true
+        },
+        {
+          "detail": "exit=0, expected=0; ----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+          "kind": "command",
+          "passed": true
+        }
+      ],
+      "changed_files": [
+        "calculator.py",
+        "test_calculator.py"
+      ],
+      "duration_ms": 122848,
+      "error": "",
+      "metrics": {
+        "cached_input_tokens": 85376,
+        "elapsed_ms": 122280,
+        "error": "",
+        "estimated_cost_cny": 0.041704,
+        "input_tokens": 126521,
+        "metadata": {
+          "after_snapshot_id": "13f1d308a5d941b2b738fea351b2aa4d",
+          "before_snapshot_id": "dcea78aceae342d6a47abd5cb4d7c053",
+          "budget": {
+            "cached_input_tokens": 85376,
+            "elapsed_seconds": 122.261461,
+            "estimated_cost_cny": 0.041704,
+            "input_tokens": 126521,
+            "limits": {
+              "max_cost_cny": null,
+              "max_model_calls": 80,
+              "max_seconds": 300.0,
+              "max_tokens": null,
+              "max_tool_calls": 120
+            },
+            "model_calls": 41,
+            "model_errors": 0,
+            "output_tokens": 4394,
+            "tool_calls": 36,
+            "tool_errors": 5,
+            "total_tokens": 130915,
+            "unpriced_model_calls": 0
+          },
+          "resumed": false,
+          "rolled_back": false
+        },
+        "mode": "team",
+        "model": "qwen-plus",
+        "model_calls": 41,
+        "model_duration_ms": 103948,
+        "model_errors": 0,
+        "output_tokens": 4394,
+        "priced_model_calls": 41,
+        "provider": "dashscope",
+        "run_id": "run_8e84bc28a74f496193e29c24823554cf",
+        "status": "succeeded",
+        "tool_calls": 36,
+        "tool_duration_ms": 15890,
+        "tool_errors": 5,
+        "tool_timeouts": 0,
+        "unpriced_model_calls": 0
+      },
+      "mode": "team",
+      "run_id": "run_8e84bc28a74f496193e29c24823554cf",
+      "run_status": "succeeded",
+      "success": true,
+      "task_id": "team-fix-division"
+    }
+  ],
+  "created_at": 1788325029.2666628,
+  "git_commit": "7022eaa31171867ec3203a1d2c4dc2ebf739058f",
+  "metrics": {
+    "assertion_pass_rate": 1.0,
+    "assertions": 3,
+    "assertions_passed": 3,
+    "average_duration_ms": 122848.0,
+    "estimated_cost_cny": 0.041704,
+    "input_tokens": 126521,
+    "model_calls": 41,
+    "model_errors": 0,
+    "output_tokens": 4394,
+    "success_rate": 1.0,
+    "tasks": 1,
+    "tasks_succeeded": 1,
+    "tool_calls": 36,
+    "tool_errors": 5,
+    "unpriced_model_calls": 0
+  },
+  "model": "qwen-plus",
+  "provider": "dashscope",
+  "schema_version": 1,
+  "suite_name": "paicli-coding-smoke",
+  "suite_version": "1.0"
+}

@@ -415,11 +415,12 @@ A report includes task/assertion success, Git commit, model, model/tool errors,
 Token usage, latency, configured cost, and changed files. Historical modes that
 do not exist fail explicitly rather than being simulated by current code.
 
-The committed five-run DashScope sample records 4/5 fully successful suites,
-14/15 successful Tasks, and 34/35 passing deterministic assertions. The failed
-Team run is retained because its final verification caught a real cross-Task
-contract mismatch. See [docs/evaluation.md](docs/evaluation.md) and
-[reports/README.md](reports/README.md).
+The historical 1.0 sample records 4/5 fully successful suites and retains its
+cross-Task Team failure. The final-code 1.1 sample records 3/3 fully successful
+suites, 9/9 successful Tasks, and 21/21 passing deterministic assertions; a
+pre-fix repeated-read failure is also retained separately. Long suites can use
+`--task-id` fragments plus `paicli-eval merge` without mixing commits. See
+[docs/evaluation.md](docs/evaluation.md) and [reports/README.md](reports/README.md).
 
 ## Real-provider tests
 
@@ -448,7 +449,8 @@ code operations consume credentials and may create billable API calls.
 - [docs/evaluation.md](docs/evaluation.md)
 - [docs/phase-09-dashscope-live.md](docs/phase-09-dashscope-live.md)
 - [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
-- [docs/final-acceptance.md](docs/final-acceptance.md)
+- [docs/final-acceptance.md](docs/final-acceptance.md) — historical 1.0 evidence
+- [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md) — P0–P2 release evidence
 - [reports/README.md](reports/README.md)
 - [docs/java-parity.md](docs/java-parity.md)
 - [PHASES.md](PHASES.md)
@@ -475,8 +477,9 @@ The final release is gated by these checks:
 [x] fresh Python 3.11/3.12 environments reproduce installation and CLI entry points
 ```
 
-Detailed commands, exact metrics, the preserved Team bad case, and explicit
-scope boundaries are recorded in
-[docs/final-acceptance.md](docs/final-acceptance.md). The `v1.0.0` product-code
-tag points at the evaluated commit; the evidence report set was committed
-immediately afterward without rewriting that historical tag.
+Historical 1.0 evidence remains in
+[docs/final-acceptance.md](docs/final-acceptance.md). P0–P2 implementation,
+pre-fix and final-code real-model runs, exact metrics, and residual boundaries
+are recorded in [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md). Release tags
+are created only after the final clean `develop` commit passes the remote
+Python 3.11/3.12 CI matrix.

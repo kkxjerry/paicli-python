@@ -43,6 +43,41 @@ The command exits zero only when every Task and deterministic assertion passes.
 Real model variance means a single run is not a statistical estimate. Use
 multiple reports for reliability analysis.
 
+## Slice and resume a long suite
+
+Long real-model suites should not depend on one process surviving every Case.
+Run individual task IDs into durable report fragments:
+
+```bash
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --task-id react-read-marker \
+  --output reports/fragments/run-react.json
+
+paicli-eval run \
+  --suite eval/suites/coding-smoke.json \
+  --provider dashscope \
+  --task-id plan-add-subtract \
+  --output reports/fragments/run-plan.json
+```
+
+Then merge all canonical Tasks:
+
+```bash
+paicli-eval merge \
+  reports/fragments/run-react.json \
+  reports/fragments/run-plan.json \
+  reports/fragments/run-team.json \
+  --suite eval/suites/coding-smoke.json \
+  --output reports/dashscope-current.json
+```
+
+The merger restores Suite order and recalculates aggregate metrics. It rejects
+mixed Suite versions, providers, models, Git commits, duplicate task results,
+unexpected tasks, and missing tasks. This makes evaluation resumable without
+silently mixing code revisions or selecting only successful fragments.
+
 ## Run a historical Git revision
 
 Use the same suite against an exported revision without creating another Git

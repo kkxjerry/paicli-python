@@ -328,7 +328,7 @@ paicli-eval stability \
 
 报告包含任务与断言成功率、Git 提交、模型、模型/工具错误、Token 用量、延迟、配置费用和变更文件。历史版本中不存在的执行模式会明确失败，不会使用当前代码进行模拟。
 
-仓库中提交的五次 DashScope 样本里，完整评测成功 4/5 次，任务成功 14/15 个，确定性断言通过 34/35 个。失败的 Team 运行也被保留，因为其最终校验真实发现了跨任务的接口契约不一致。详见 [docs/evaluation.md](docs/evaluation.md) 和 [reports/README.md](reports/README.md)。
+历史 1.0 的五次 DashScope 样本中，完整评测成功 4/5 次，并保留了跨任务契约不一致的 Team 失败。最终代码版 1.1 连续三轮完整评测全部成功：9/9 个任务、21/21 条确定性断言通过；修复前的重复读取失败也单独保留。长评测可使用 `--task-id` 分片，再通过 `paicli-eval merge` 合并，并拒绝混入不同 Git SHA。详见 [docs/evaluation.md](docs/evaluation.md) 和 [reports/README.md](reports/README.md)。
 
 ## 真实模型测试
 
@@ -356,7 +356,8 @@ python -m unittest tests.test_vllm_live -v
 - [docs/evaluation.md](docs/evaluation.md)
 - [docs/phase-09-dashscope-live.md](docs/phase-09-dashscope-live.md)
 - [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
-- [docs/final-acceptance.md](docs/final-acceptance.md)
+- [docs/final-acceptance.md](docs/final-acceptance.md) — 1.0 历史验收
+- [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md) — P0–P2 正式验收
 - [reports/README.md](reports/README.md)
 - [docs/java-parity.md](docs/java-parity.md)
 - [PHASES.md](PHASES.md)
@@ -383,4 +384,4 @@ python -m unittest tests.test_vllm_live -v
 [x] 全新 Python 3.11/3.12 环境可以复现安装和 CLI 入口
 ```
 
-详细命令、精确指标、保留的 Team 失败案例和明确的范围边界，都记录在 [docs/final-acceptance.md](docs/final-acceptance.md) 中。只有最终干净的 `develop` 提交通过 GitHub Actions 的 Python 3.11/3.12 矩阵后，才会创建 `v1.0.0` 标签。
+1.0 的历史证据保留在 [docs/final-acceptance.md](docs/final-acceptance.md)。P0–P2 的实现、修复前 Bad Case、最终三轮真实模型结果和范围边界记录在 [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md)。只有最终干净的 `develop` 提交通过 GitHub Actions Python 3.11/3.12 矩阵后，才会创建 `v1.1.0` 标签。

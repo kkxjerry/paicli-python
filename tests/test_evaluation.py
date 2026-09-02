@@ -306,6 +306,43 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(34, stability["metrics"]["assertions_passed"])
         self.assertEqual(1, len(stability["cases"]["team-fix-division"]["failed_runs"]))
 
+    def test_repository_1_1_release_evidence_is_internally_consistent(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        pre_fix = EvaluationReport.load(
+            root / "reports" / "dashscope-1.1-run-01.json"
+        )
+        final_reports = [
+            EvaluationReport.load(root / "reports" / f"dashscope-1.1-run-0{number}.json")
+            for number in (2, 3, 4)
+        ]
+        stability = json.loads(
+            (root / "reports" / "dashscope-1.1-stability.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        comparison = json.loads(
+            (root / "reports" / "1.0-vs-1.1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertTrue(pre_fix.git_commit.startswith("eb6f0f3"))
+        self.assertEqual(2, pre_fix.metrics["tasks_succeeded"])
+        self.assertTrue(
+            all(report.git_commit.startswith("7022eaa") for report in final_reports)
+        )
+        self.assertTrue(all(report.metrics["tasks_succeeded"] == 3 for report in final_reports))
+        self.assertEqual(3, stability["metrics"]["run_count"])
+        self.assertEqual(3, stability["metrics"]["fully_successful_runs"])
+        self.assertEqual(9, stability["metrics"]["tasks_succeeded"])
+        self.assertEqual(21, stability["metrics"]["assertions_passed"])
+        self.assertEqual(
+            ["7022eaa31171867ec3203a1d2c4dc2ebf739058f"],
+            stability["git_commits"],
+        )
+        self.assertEqual("efficiency_improved", comparison["verdict"])
+        self.assertTrue(str(comparison["candidate_commit"]).startswith("7022eaa"))
+
     def test_command_assertion_uses_argv_without_shell(self) -> None:
         suite = EvalSuite(
             "command",
