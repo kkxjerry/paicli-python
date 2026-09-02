@@ -231,6 +231,19 @@ class AgentLoopEngine:
                 response.tool_calls,
                 [result.content for result in results],
             )
+            repeated_rounds = budget.repeated_no_progress_rounds
+            if (
+                repeated_rounds >= 2
+                and repeated_rounds == budget.stagnation_window - 1
+            ):
+                warning = (
+                    "The last tool calls repeated unchanged observations. "
+                    "Do not call the same tools again with the same arguments. "
+                    "Use the evidence already present to return the assigned "
+                    "task result, or choose a materially different action."
+                )
+                self.on_event("stagnation_warning", warning)
+                self.history.append({"role": "system", "content": warning})
             # If cancellation arrived during the batch, preserve the complete
             # assistant/tool protocol in history, then stop before a new model
             # request is issued.

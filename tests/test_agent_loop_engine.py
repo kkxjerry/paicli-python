@@ -282,6 +282,43 @@ class AgentLoopEngineTest(unittest.TestCase):
             self.assertEqual(3, len(client.requests))
             self.assertIn("no observable progress", outcome.error)
 
+    def test_repeated_tool_warning_can_recover_before_stagnation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repeated = ChatResponse(
+                "",
+                (ToolCall("call-1", "list_dir", "{}"),),
+            )
+            client = FakeClient(
+                [
+                    repeated,
+                    ChatResponse(
+                        "",
+                        (ToolCall("call-2", "list_dir", "{}"),),
+                    ),
+                    ChatResponse("Used the existing directory observation."),
+                ]
+            )
+            events: list[tuple[str, str]] = []
+            agent = Agent(
+                client,
+                ToolRegistry(directory),
+                max_steps=10,
+                on_event=lambda kind, text: events.append((kind, text)),
+            )
+
+            outcome = agent.run_outcome("Inspect once and summarize")
+
+            self.assertTrue(outcome.succeeded)
+            self.assertEqual(3, outcome.iterations)
+            self.assertTrue(any(kind == "stagnation_warning" for kind, _ in events))
+            self.assertTrue(
+                any(
+                    message.get("role") == "system"
+                    and "repeated unchanged observations" in str(message.get("content"))
+                    for message in client.requests[2]
+                )
+            )
+
     def test_token_budget_stops_before_another_model_request(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             client = FakeClient(

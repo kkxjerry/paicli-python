@@ -68,6 +68,20 @@ class AgentBudget:
             self._cached_input_tokens,
         )
 
+    @property
+    def repeated_no_progress_rounds(self) -> int:
+        """Number of consecutive rounds matching the latest observation."""
+
+        if not self._recent_no_progress_signatures:
+            return 0
+        latest = self._recent_no_progress_signatures[-1]
+        count = 0
+        for signature in reversed(self._recent_no_progress_signatures):
+            if signature != latest:
+                break
+            count += 1
+        return count
+
     def begin_iteration(self) -> int:
         self.iteration += 1
         return self.iteration

@@ -136,7 +136,9 @@ class TaskPacket:
         contracts = {
             TaskType.FILE_READ: (
                 "You MUST use a read-only repository tool in this attempt. "
-                "Base the result on the returned observation, not memory or inference."
+                "Base the result on the returned observation, not memory or inference. "
+                "Once the requested evidence is present, synthesize the result and "
+                "finish; do not repeat unchanged reads."
             ),
             TaskType.FILE_WRITE: (
                 "This task packet is explicit authorization to modify only the "
