@@ -531,6 +531,79 @@ def load_suite(path: str | Path) -> EvalSuite:
     )
 
 
+def select_suite_tasks(
+    suite: EvalSuite,
+    task_ids: list[str] | tuple[str, ...],
+) -> EvalSuite:
+    """Return a suite fragment while preserving the canonical task order."""
+
+    requested = tuple(dict.fromkeys(str(value).strip() for value in task_ids if str(value).strip()))
+    if not requested:
+        return suite
+    known = {task.id for task in suite.tasks}
+    unknown = [task_id for task_id in requested if task_id not in known]
+    if unknown:
+        raise ValueError("unknown evaluation task ids: " + ", ".join(unknown))
+    selected = tuple(task for task in suite.tasks if task.id in set(requested))
+    return EvalSuite(suite.name, suite.version, selected)
+
+
+def merge_case_reports(
+    reports: list[EvaluationReport] | tuple[EvaluationReport, ...],
+    suite: EvalSuite,
+) -> EvaluationReport:
+    """Merge independently executed case reports into one canonical suite report.
+
+    This makes long real-model evaluations resumable without mixing versions:
+    every fragment must use the same suite, provider, model, and Git commit, and
+    each canonical task must appear exactly once.
+    """
+
+    if not reports:
+        raise ValueError("at least one case report is required")
+    first = reports[0]
+    cases_by_id: dict[str, EvalCaseResult] = {}
+    for report in reports:
+        if (
+            report.suite_name != suite.name
+            or report.suite_version != suite.version
+            or report.provider != first.provider
+            or report.model != first.model
+            or report.git_commit != first.git_commit
+        ):
+            raise ValueError(
+                "case reports must use the same suite, provider, model, and Git commit"
+            )
+        for case in report.cases:
+            if case.task_id in cases_by_id:
+                raise ValueError(f"duplicate evaluation task report: {case.task_id}")
+            cases_by_id[case.task_id] = case
+
+    expected = tuple(task.id for task in suite.tasks)
+    missing = [task_id for task_id in expected if task_id not in cases_by_id]
+    extra = sorted(set(cases_by_id) - set(expected))
+    if missing or extra:
+        parts: list[str] = []
+        if missing:
+            parts.append("missing: " + ", ".join(missing))
+        if extra:
+            parts.append("unexpected: " + ", ".join(extra))
+        raise ValueError("incomplete case report set (" + "; ".join(parts) + ")")
+
+    ordered = tuple(cases_by_id[task_id] for task_id in expected)
+    return EvaluationReport(
+        schema_version=max(report.schema_version for report in reports),
+        suite_name=suite.name,
+        suite_version=suite.version,
+        created_at=max(report.created_at for report in reports),
+        git_commit=first.git_commit,
+        provider=first.provider,
+        model=first.model,
+        cases=ordered,
+        metrics=_aggregate(list(ordered)),
+    )
+
+
 def compare_reports(
     baseline: EvaluationReport,
     candidate: EvaluationReport,
@@ -1090,6 +1163,12 @@ def build_cli() -> argparse.ArgumentParser:
     run.add_argument("--suite", type=Path, required=True)
     run.add_argument("--provider", required=True, choices=sorted(LlmClientFactory.PROVIDERS))
     run.add_argument("--output", type=Path, required=True)
+    run.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Run only this task ID; repeat to run multiple tasks",
+    )
     run.add_argument("--keep-workspaces", action="store_true")
     run.add_argument("--workspace-parent", type=Path)
     run.add_argument(
@@ -1102,6 +1181,13 @@ def build_cli() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Git repository containing --revision (defaults to current repo)",
     )
+    merge = subparsers.add_parser(
+        "merge",
+        help="Merge independently executed task reports for one suite/commit",
+    )
+    merge.add_argument("reports", type=Path, nargs="+")
+    merge.add_argument("--suite", type=Path, required=True)
+    merge.add_argument("--output", type=Path, required=True)
     compare = subparsers.add_parser("compare", help="Compare two reports")
     compare.add_argument("baseline", type=Path)
     compare.add_argument("candidate", type=Path)
@@ -1119,7 +1205,7 @@ def main(argv: list[str] | None = None) -> int:
     _load_env()
     args = build_cli().parse_args(argv)
     if args.command == "run":
-        suite = load_suite(args.suite)
+        suite = select_suite_tasks(load_suite(args.suite), args.task_id)
         revision_executor: GitRevisionCaseExecutor | None = None
         try:
             if args.revision:
@@ -1139,6 +1225,14 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if revision_executor is not None:
                 revision_executor.close()
+        report.save(args.output)
+        print(json.dumps(report.metrics, ensure_ascii=False, indent=2))
+        print(f"report={args.output}")
+        return 0 if float(report.metrics["success_rate"]) == 1.0 else 1
+    if args.command == "merge":
+        suite = load_suite(args.suite)
+        fragments = [EvaluationReport.load(path) for path in args.reports]
+        report = merge_case_reports(fragments, suite)
         report.save(args.output)
         print(json.dumps(report.metrics, ensure_ascii=False, indent=2))
         print(f"report={args.output}")
@@ -1178,5 +1272,7 @@ __all__ = [
     "GitRevisionCaseExecutor",
     "compare_reports",
     "load_suite",
+    "merge_case_reports",
+    "select_suite_tasks",
     "summarize_stability",
 ]

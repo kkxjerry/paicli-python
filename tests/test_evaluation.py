@@ -17,6 +17,8 @@ from paicli.evaluation import (
     GitRevisionCaseExecutor,
     compare_reports,
     load_suite,
+    merge_case_reports,
+    select_suite_tasks,
     summarize_stability,
 )
 
@@ -119,6 +121,33 @@ class EvaluationTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "escapes workspace"):
             EvaluationRunner(FakeExecutor()).run(malicious)
+
+    def test_suite_fragments_merge_into_canonical_order_and_metrics(self) -> None:
+        suite = EvalSuite(
+            "fixed",
+            "1",
+            (
+                EvalTask("first", "first"),
+                EvalTask("second", "second"),
+            ),
+        )
+        second = EvaluationRunner(FakeExecutor()).run(
+            select_suite_tasks(suite, ["second"])
+        )
+        first = EvaluationRunner(FakeExecutor()).run(
+            select_suite_tasks(suite, ["first"])
+        )
+
+        merged = merge_case_reports([second, first], suite)
+
+        self.assertEqual(("first", "second"), tuple(case.task_id for case in merged.cases))
+        self.assertEqual(2, merged.metrics["tasks"])
+        self.assertEqual(2, merged.metrics["tasks_succeeded"])
+        self.assertEqual(4, merged.metrics["model_calls"])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            merge_case_reports([first, first, second], suite)
+        with self.assertRaisesRegex(ValueError, "unknown evaluation task"):
+            select_suite_tasks(suite, ["missing"])
 
     def test_stability_summary_preserves_real_model_variance(self) -> None:
         suite = EvalSuite(
