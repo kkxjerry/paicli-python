@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +88,129 @@ class StateRecoveryTest(unittest.TestCase):
                     loaded.records["inspect"].worker_outcomes[0].usage.total_tokens,
                 )
                 self.assertGreaterEqual(store.checkpoint_count("run-1"), 2)
+                self.assertGreater(loaded.owner_pid, 0)
+            finally:
+                store.close()
+
+    def test_checkpoint_reserves_sequence_inside_immediate_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStateStore(Path(directory, "runs.db"))
+            try:
+                store.create(
+                    run_id="run-transaction",
+                    mode="plan",
+                    goal="goal",
+                    prompt="goal",
+                )
+                statements: list[str] = []
+                store._connection.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+
+                store.checkpoint(
+                    "run-transaction",
+                    phase="test",
+                    plan=None,
+                    records={},
+                )
+
+                begin = next(
+                    index
+                    for index, statement in enumerate(statements)
+                    if statement.upper().startswith("BEGIN IMMEDIATE")
+                )
+                sequence_read = next(
+                    index
+                    for index, statement in enumerate(statements)
+                    if "MAX(SEQUENCE)" in statement.upper()
+                )
+                self.assertLess(begin, sequence_read)
+            finally:
+                store.close()
+
+    def test_existing_ownerless_database_is_migrated_and_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "runs.db")
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(
+                    """
+                    CREATE TABLE runs (
+                        run_id TEXT PRIMARY KEY,
+                        mode TEXT NOT NULL,
+                        goal TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        before_snapshot_id TEXT NOT NULL DEFAULT '',
+                        after_snapshot_id TEXT NOT NULL DEFAULT '',
+                        current_task_id TEXT NOT NULL DEFAULT '',
+                        current_task_snapshot_id TEXT NOT NULL DEFAULT '',
+                        plan_json TEXT NOT NULL DEFAULT '',
+                        records_json TEXT NOT NULL DEFAULT '{}',
+                        answer TEXT NOT NULL DEFAULT '',
+                        error TEXT NOT NULL DEFAULT '',
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    INSERT INTO runs(
+                        run_id, mode, goal, prompt, status, created_at, updated_at
+                    ) VALUES ('legacy-run', 'react', 'goal', 'goal', 'running', 1, 1);
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            store = RunStateStore(path)
+            try:
+                migrated = store.load("legacy-run")
+                self.assertEqual(0, migrated.owner_pid)
+                changed = store.mark_stale_running_interrupted()
+                self.assertEqual(1, changed)
+                self.assertEqual(
+                    StoredRunStatus.INTERRUPTED,
+                    store.load("legacy-run").status,
+                )
+            finally:
+                store.close()
+
+    def test_live_owner_is_not_marked_interrupted_by_second_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "runs.db")
+            first = RunStateStore(path)
+            second = RunStateStore(path)
+            try:
+                created = first.create(
+                    run_id="active-run",
+                    mode="react",
+                    goal="goal",
+                    prompt="goal",
+                )
+
+                changed = second.mark_stale_running_interrupted()
+
+                self.assertEqual(0, changed)
+                self.assertEqual(StoredRunStatus.RUNNING, second.load(created.run_id).status)
+            finally:
+                second.close()
+                first.close()
+
+    def test_dead_owner_is_marked_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RunStateStore(Path(directory, "runs.db"))
+            try:
+                store.create(
+                    run_id="dead-run",
+                    mode="react",
+                    goal="goal",
+                    prompt="goal",
+                )
+                with patch("paicli.state._pid_is_alive", return_value=False):
+                    changed = store.mark_stale_running_interrupted()
+
+                self.assertEqual(1, changed)
+                interrupted = store.load("dead-run")
+                self.assertEqual(StoredRunStatus.INTERRUPTED, interrupted.status)
+                self.assertEqual(0, interrupted.owner_pid)
             finally:
                 store.close()
 
@@ -238,12 +363,13 @@ class StateRecoveryTest(unittest.TestCase):
                 enable_hitl=False,
                 subagent_max_steps=4,
             )
-            coordinator = RunCoordinator(
-                runtime,
-                root,
-                state_store=store,
-                snapshot_service=snapshots,
-            )
+            with patch("paicli.state._pid_is_alive", return_value=False):
+                coordinator = RunCoordinator(
+                    runtime,
+                    root,
+                    state_store=store,
+                    snapshot_service=snapshots,
+                )
             try:
                 result = coordinator.resume("recover-me")
 

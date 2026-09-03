@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paicli-python"
-version = "1.1.0"
+version = "1.1.1"
 description = "A local ReAct, Plan, and Team coding-agent harness"
 readme = "README.md"
 license = {file = "LICENSE"}

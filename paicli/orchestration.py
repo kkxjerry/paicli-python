@@ -675,16 +675,34 @@ class TeamModeRuntime:
         run_id: str,
         observer: OrchestrationObserver | None,
     ) -> None:
+        task_records = {
+            task.id: records.get(task.id)
+            or TaskRunRecord(
+                task.id,
+                f"worker-{task.id}",
+                self.factory.scope_for_task(task),
+            )
+            for task in wave
+        }
+        records.update(task_records)
+
         if len(wave) == 1:
             task = wave[0]
-            records[task.id] = self._execute_task(
-                plan,
-                task,
-                completed_results,
-                changed_files,
-                run_id,
-                observer,
-            )
+            try:
+                records[task.id] = self._execute_task(
+                    plan,
+                    task,
+                    completed_results,
+                    changed_files,
+                    run_id,
+                    observer,
+                    task_records[task.id],
+                )
+            except Exception as exc:
+                task.mark_failed(f"{type(exc).__name__}: {exc}")
+                # Keep the pre-registered record: it may already contain a
+                # completed write, Tool Results, token usage, or reviews needed
+                # to diagnose and safely resume the failed task.
             return
 
         executor = ThreadPoolExecutor(
@@ -701,6 +719,7 @@ class TeamModeRuntime:
                 dict(changed_files),
                 run_id,
                 observer,
+                task_records[task.id],
             )
             for task in wave
         }
@@ -710,11 +729,8 @@ class TeamModeRuntime:
                     records[task.id] = futures[task.id].result()
                 except Exception as exc:
                     task.mark_failed(f"{type(exc).__name__}: {exc}")
-                    records[task.id] = TaskRunRecord(
-                        task.id,
-                        f"worker-{task.id}",
-                        self.factory.scope_for_task(task),
-                    )
+                    # ``records[task.id]`` was installed before submitting the
+                    # Future, so partial worker/reviewer evidence is preserved.
         finally:
             executor.shutdown(wait=True, cancel_futures=False)
 
@@ -726,13 +742,14 @@ class TeamModeRuntime:
         changed_files: Mapping[str, tuple[str, ...]],
         run_id: str,
         observer: OrchestrationObserver | None,
+        record: TaskRunRecord | None = None,
     ) -> TaskRunRecord:
         worker = self.factory.create_worker(task, name=f"worker-{task.id}")
         reviewer = ReviewerAgent(
             self.factory.create_reviewer(name=f"reviewer-{task.id}"),
             max_repair_attempts=self.review_repair_attempts,
         )
-        record = TaskRunRecord(task.id, worker.name, worker.scope)
+        record = record or TaskRunRecord(task.id, worker.name, worker.scope)
         feedback: tuple[str, ...] = ()
 
         def finish() -> TaskRunRecord:

@@ -50,6 +50,7 @@ The production CLI places HITL in front of side effects:
 - `write_file`: unified diff preview;
 - `create_project`: destination and type preview;
 - `execute_command`: working directory and exact command preview;
+- `save_memory`: cross-session persistence preview;
 - unknown-risk MCP tools: argument preview.
 
 Modes:
@@ -66,8 +67,9 @@ line of defense, not a complete shell sandbox.
 ### Snapshots and rollback
 
 A coordinated run captures a BEFORE snapshot. Mutating tasks capture a
-pre-attempt snapshot. Failed and partial runs restore the run snapshot by
-default. Resume restores the last uncertain task boundary before retry.
+pre-attempt snapshot. Failed and partial runs apply the configured rollback
+policy; the CLI default asks before restoring. Resume restores the last uncertain
+task boundary before retry.
 
 ### Secrets
 
@@ -88,8 +90,10 @@ The production application remains fail-closed when embedded as a library:
 side-effecting tools use HITL with deny behavior unless the caller explicitly
 chooses an approval mode/handler or opts out in an already isolated environment.
 Interactive approvals can persist exact or glob-shaped rules in
-`.paicli/permissions.json`. Last matching rule wins, but hard policy always has
-higher precedence.
+`.paicli/permissions.json`. Exact rules escape glob metacharacters; pattern
+authority is granted only through the explicit pattern flow. Approval handlers
+cannot replace arguments after validation and hard-policy assessment. Last
+matching rule wins, but hard policy always has higher precedence.
 
 ## Optional extension boundary
 
@@ -100,8 +104,11 @@ bounded stderr diagnostics. Browser tools are ordinary scoped MCP tools.
 Web access requires an explicit host allow-list. The fetcher validates URL
 scheme and credentials, resolves every host, rejects non-public addresses,
 revalidates each redirect and the final response URL, and bounds response size.
-This reduces SSRF exposure but does not make arbitrary Internet content trusted;
-repository/web prompt injection is still handled through tool scope and policy.
+Malformed HTML that ends inside an ignored active-content element is rejected
+instead of being returned as a successful partial extraction. These controls
+reduce SSRF and silent-truncation exposure but do not make arbitrary Internet
+content trusted; repository/web prompt injection is still handled through tool
+scope and policy.
 
 ## Residual risks
 
@@ -126,22 +133,38 @@ actions. Deterministic capability scopes, policy, validation, approval, and
 completion gates must remain outside the model. Never grant a Reviewer write
 access merely through Prompt instructions.
 
+### Long-term memory trust
+
+In the full application runtime, `save_memory` is approval-worthy. Model-authored
+SQLite records are stored as `unverified` and excluded from normal context
+retrieval until explicitly promoted. This prevents a prompt-injected repository
+or web page from becoming trusted cross-session context merely because the model
+persisted it. Explicit legacy JSONL memory does not provide this lifecycle and is
+deprecated for removal after the 1.x compatibility line.
+
 ### Snapshot limitations
 
+Tree manifests are validated before restore, including symlink paths and targets.
 Snapshots restore files under the project root. They cannot undo external
 network calls, package publication, database mutations, credential rotation,
 or arbitrary shell side effects outside that tree.
 
 ### Concurrent mutation
 
-PaiCLI intentionally serializes mutation-capable DAG tasks in a shared
-workspace. It does not claim safe parallel code modification. A future design
-would require per-worker Git worktrees, merge semantics, and post-merge tests.
+PaiCLI intentionally serializes mutation-capable DAG tasks within one Run in a
+shared workspace. Separate PaiCLI processes are not coordinated at the file or
+snapshot layer; do not run two mutation-capable sessions against the same
+working tree. PaiCLI does not claim safe parallel code modification. A future
+design would require per-worker/process Git worktrees, merge semantics, fencing,
+and post-merge tests.
 
 ### SQLite scope
 
-The state and trace stores are safe for local threads and use WAL mode. They do
-not implement distributed leases, multi-host ownership, or high availability.
+The state and trace stores are safe for local threads and use WAL mode. Local
+runs record an owner PID so startup does not interrupt a still-live process, but
+PID ownership is not a lease or fencing protocol. The stores do not implement
+safe concurrent resume, distributed leases, multi-host ownership, or high
+availability.
 
 ## Recommended operating profile
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import glob
 import json
 import os
 import time
@@ -128,12 +129,17 @@ class PermissionStore:
         *,
         action: PermissionAction | str = PermissionAction.ALLOW,
     ) -> PermissionRule:
+        """Persist a literal call without granting accidental glob authority."""
+
         return self.add(
             PermissionRule.create(
-                tool_name,
+                glob.escape(str(tool_name)),
                 action,
-                arguments,
-                description="remembered interactive decision",
+                {
+                    str(key): glob.escape(str(value))
+                    for key, value in arguments.items()
+                },
+                description="remembered exact interactive decision",
             )
         )
 

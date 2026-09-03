@@ -233,22 +233,30 @@ class ManagedLongTermMemory:
             ).fetchall()
         return [_entry(row) for row in rows]
 
-    def search(self, query: str, limit: int = 5) -> list[MemoryEntry]:
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        include_unverified: bool = False,
+    ) -> list[MemoryEntry]:
+        """Retrieve trusted memory; model-authored candidates are opt-in."""
+
         if limit < 1:
             return []
         terms = _terms(query)
         if not terms:
             return []
+        statuses = [MemoryStatus.ACTIVE.value, MemoryStatus.VERIFIED.value]
+        if include_unverified:
+            statuses.append(MemoryStatus.UNVERIFIED.value)
+        placeholders = ",".join("?" for _ in statuses)
         with self._lock:
             rows = self._connection.execute(
-                """SELECT * FROM memories
-                   WHERE status IN (?, ?, ?)
-                   ORDER BY updated_at DESC""",
-                (
-                    MemoryStatus.ACTIVE.value,
-                    MemoryStatus.VERIFIED.value,
-                    MemoryStatus.UNVERIFIED.value,
-                ),
+                f"""SELECT * FROM memories
+                    WHERE status IN ({placeholders})
+                    ORDER BY updated_at DESC""",
+                tuple(statuses),
             ).fetchall()
 
         def score(row: sqlite3.Row) -> tuple[float, float]:

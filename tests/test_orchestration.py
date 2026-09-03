@@ -591,6 +591,46 @@ class OrchestrationTest(unittest.TestCase):
             self.assertIs(FinishReason.INTERNAL_ERROR, outcome.finish_reason)
             self.assertIn("provider unavailable", outcome.error)
 
+    def test_team_preserves_partial_record_when_checkpoint_observer_raises(self) -> None:
+        class FailingCheckpointObserver:
+            def after_task(self, *_arguments: object) -> None:
+                raise RuntimeError("checkpoint failed after worker evidence")
+
+        planner = StaticPlanner(
+            [
+                Task("read-a", "Read A", task_type=TaskType.ANALYSIS),
+                Task("read-b", "Read B", task_type=TaskType.ANALYSIS),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            client = RoutingClient()
+            factory = SubAgentFactory(
+                client,
+                ToolRegistry(directory),
+                directory,
+                enable_memory=False,
+            )
+            runtime = TeamModeRuntime(
+                planner,  # type: ignore[arg-type]
+                factory,
+                max_workers=2,
+                aggregator=DeterministicResultAggregator(),
+            )
+
+            result = runtime.run(
+                "Preserve evidence when checkpointing fails",
+                observer=FailingCheckpointObserver(),  # type: ignore[arg-type]
+            )
+
+            self.assertIs(OrchestrationStatus.FAILED, result.status)
+            for task_id in ("read-a", "read-b"):
+                self.assertEqual(TaskStatus.FAILED, result.plan.task(task_id).status)
+                record = result.records[task_id]
+                self.assertEqual(1, len(record.worker_outcomes))
+                self.assertEqual(1, len(record.reviews))
+                self.assertIn(task_id, record.worker_outcomes[0].content)
+                self.assertIn("checkpoint failed", result.plan.task(task_id).error)
+
     def test_reviewer_model_error_fails_task_instead_of_passing_it(self) -> None:
         plan = {
             "summary": "review one analysis",

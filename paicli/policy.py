@@ -47,7 +47,6 @@ class ApprovalRequest:
 @dataclass(frozen=True)
 class ApprovalResult:
     decision: ApprovalDecision
-    arguments: dict[str, object] | None = None
     remember: bool = False
     argument_patterns: dict[str, str] | None = None
 
@@ -88,12 +87,12 @@ class ConsoleApprovalHandler:
             self.output_fn("")
             return ApprovalResult(ApprovalDecision.DENY)
         if value in {"a", "always"}:
+            # ``a`` promises an exact remembered call.  Do not copy raw values
+            # into glob patterns: a literal ``*``, ``?``, or ``[`` in a command
+            # would otherwise silently broaden the permission.
             return ApprovalResult(
                 ApprovalDecision.APPROVE,
                 remember=True,
-                argument_patterns={
-                    key: str(item) for key, item in request.arguments.items()
-                },
             )
         if value in {"p", "pattern"}:
             primary = _primary_permission_argument(request)
@@ -180,7 +179,7 @@ class AuditLog:
         outcome: str,
         approver: str,
     ) -> None:
-        from .observability import redact_text
+        from .observability import redact_json
 
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / time.strftime("%Y-%m-%d.jsonl")
@@ -191,8 +190,9 @@ class AuditLog:
             "outcome": outcome,
             "approver": approver,
         }
-        # Re-serialize through redact_text so nested arguments cannot leak a key.
-        serialized = redact_text(json.dumps(event, ensure_ascii=False, default=str))
+        # Redact the parsed object recursively; regex-only text redaction can
+        # miss nested keys after JSON spacing or formatting changes.
+        serialized = redact_json(json.dumps(event, ensure_ascii=False, default=str))
         with path.open("a", encoding="utf-8") as stream:
             stream.write(serialized + "\n")
 
@@ -334,7 +334,6 @@ class HitlToolRegistry:
                 ToolErrorType.POLICY_DENIED,
             )
 
-        approved_arguments = arguments
         if self.permission_store is not None:
             permission, rule = self.permission_store.resolve(name, arguments)
             if permission is PermissionAction.DENY:
@@ -357,23 +356,26 @@ class HitlToolRegistry:
                     "Tool denied by user",
                     ToolErrorType.APPROVAL_DENIED,
                 )
-            approved_arguments = result.arguments or arguments
             if result.remember and self.permission_store is not None:
-                patterns = result.argument_patterns or {
-                    key: str(value) for key, value in approved_arguments.items()
-                }
-                self.permission_store.add(
-                    PermissionRule.create(
+                if result.argument_patterns is None:
+                    self.permission_store.add_exact(
                         name,
-                        PermissionAction.ALLOW,
-                        patterns,
-                        description="remembered from HITL approval",
+                        arguments,
+                        action=PermissionAction.ALLOW,
                     )
-                )
+                else:
+                    self.permission_store.add(
+                        PermissionRule.create(
+                            name,
+                            PermissionAction.ALLOW,
+                            result.argument_patterns,
+                            description="remembered glob from HITL approval",
+                        )
+                    )
             self._audit(request, "allow", "hitl")
         else:
             self._audit(request, "allow", "none")
-        return json.dumps(approved_arguments, ensure_ascii=False)
+        return json.dumps(arguments, ensure_ascii=False)
 
     def _preview(self, name: str, arguments: dict[str, object]) -> str:
         spec = self.registry.spec(name)

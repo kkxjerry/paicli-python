@@ -246,11 +246,16 @@ def build_react_runtime(
     long_term: Any | None = None
     if enable_memory:
         resolved = Path(memory_path or default_memory_path()).expanduser()
-        long_term = (
-            LongTermMemory(resolved)
-            if resolved.suffix.lower() == ".jsonl"
-            else ManagedMemoryStore(resolved)
-        )
+        if resolved.suffix.lower() == ".jsonl":
+            if on_event is not None:
+                on_event(
+                    "warning",
+                    "Legacy JSONL memory is deprecated and lacks the trust "
+                    "lifecycle of ManagedMemoryStore; migrate it before PaiCLI 2.0.",
+                )
+            long_term = LongTermMemory(resolved)
+        else:
+            long_term = ManagedMemoryStore(resolved)
         memory = MemoryManager(
             max_tokens=settings.compression_trigger_tokens,
             long_term=long_term,

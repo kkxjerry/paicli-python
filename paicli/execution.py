@@ -196,9 +196,10 @@ class RunCoordinator:
             else RollbackPolicy(rollback_policy)
         )
         self.rollback_handler = rollback_handler
-        # This process has not started a run yet, so any still-running row came
-        # from an interrupted earlier owner. The store is intentionally local
-        # single-process state, not a distributed lease service.
+        # Recover only rows whose recorded owner PID is no longer alive. A
+        # second PaiCLI process using the same project must not silently steal
+        # or interrupt an active run. This remains local PID ownership rather
+        # than a distributed lease service.
         self.state_store.mark_stale_running_interrupted()
 
     def close(self) -> None:

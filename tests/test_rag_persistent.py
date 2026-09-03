@@ -105,17 +105,23 @@ class ManagedMemoryTest(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_verified_memory_ranks_above_unverified_equal_overlap(self) -> None:
+    def test_unverified_memory_is_excluded_unless_explicitly_requested(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ManagedLongTermMemory(Path(directory, "memory.db"))
             try:
                 unverified = store.save("database uses postgres", ("database",))
                 verified = store.save("database uses sqlite", ("database",), verified=True)
-                matches = store.search("database uses", limit=2)
+                trusted = store.search("database uses", limit=2)
+                inspected = store.search(
+                    "database uses",
+                    limit=2,
+                    include_unverified=True,
+                )
             finally:
                 store.close()
-            self.assertEqual(verified.id, matches[0].id)
-            self.assertEqual(unverified.id, matches[1].id)
+            self.assertEqual([verified.id], [item.id for item in trusted])
+            self.assertEqual(verified.id, inspected[0].id)
+            self.assertEqual(unverified.id, inspected[1].id)
 
 
 if __name__ == "__main__":

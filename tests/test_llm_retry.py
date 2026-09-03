@@ -71,6 +71,36 @@ class LlmRetryTest(unittest.TestCase):
         self.assertEqual(2, client.calls)
         self.assertEqual([0.75], sleeps)
 
+    def test_excessive_retry_after_fails_fast_with_actionable_wait(self) -> None:
+        client = SequenceClient(
+            [
+                LlmError(
+                    "daily quota exhausted",
+                    status_code=429,
+                    retryable=True,
+                    retry_after_seconds=3600,
+                )
+            ]
+        )
+        sleeps: list[float] = []
+        resilient = RetryingLlmClient(
+            client,
+            max_attempts=3,
+            max_retry_after_seconds=60,
+            sleep=sleeps.append,
+        )
+
+        with self.assertRaisesRegex(
+            LlmError,
+            r"Retry-After=3600s.*wait limit of 60s.*Retry the command",
+        ) as raised:
+            resilient.chat([], [])
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertEqual(3600, raised.exception.retry_after_seconds)
+        self.assertEqual(1, client.calls)
+        self.assertEqual([], sleeps)
+
     def test_permanent_failure_is_not_retried(self) -> None:
         client = SequenceClient(
             [LlmError("bad request", status_code=400, retryable=False)]

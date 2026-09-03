@@ -679,7 +679,7 @@ def register_memory_tool(
         tags = tuple(str(tag) for tag in arguments.get("tags", []))
         save_agent_memory = getattr(long_term, "save_agent_memory", None)
         if callable(save_agent_memory):
-            save_agent_memory(
+            saved = save_agent_memory(
                 content,
                 tags=tags,
                 kind=str(arguments.get("kind", "fact")),
@@ -691,7 +691,7 @@ def register_memory_tool(
         else:
             save_record = getattr(long_term, "save_record", None)
             if callable(save_record):
-                save_record(
+                saved = save_record(
                     content,
                     tags=tags,
                     kind=str(arguments.get("kind", "fact")),
@@ -701,7 +701,11 @@ def register_memory_tool(
                     supersedes_id=str(arguments.get("supersedes_id", "")),
                 )
             else:
-                long_term.save(content, tags)
+                saved = long_term.save(content, tags)
+        status = getattr(saved, "status", "")
+        status_value = getattr(status, "value", str(status))
+        if status_value == "unverified":
+            return "Memory saved as an unverified candidate pending explicit trust."
         return "Memory saved."
 
     # ToolSpec 会同时被用于：告诉模型工具定义，以及把调用路由到 save_memory。
@@ -737,7 +741,10 @@ def register_memory_tool(
                 required=["content"],
             ),
             save_memory,
-            risk=ToolRisk.SAFE,
+            # Long-term memory crosses sessions and is injected into future
+            # model context. Treat persistence as an approval-worthy action,
+            # even though ManagedMemoryStore initially marks it unverified.
+            risk=ToolRisk.MEDIUM,
             # JSONL append is a deliberate state change and should not race
             # another save_memory call from the same model response.
             side_effect=ToolSideEffect.FILE_WRITE,

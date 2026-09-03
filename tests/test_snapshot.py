@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -148,6 +149,53 @@ class SnapshotTest(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertEqual("target.txt", str(link.readlink()))
             self.assertEqual("before", target.read_text(encoding="utf-8"))
+
+    def test_tampered_tree_snapshot_rejects_symlink_path_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory)
+            root = outer / "project"
+            root.mkdir()
+            keep = root / "keep.txt"
+            keep.write_text("before", encoding="utf-8")
+            service = SnapshotService(root)
+            snapshot = service.capture_tree(SnapshotPhase.BEFORE)
+            keep.write_text("after", encoding="utf-8")
+            later = root / "later.txt"
+            later.write_text("do not remove", encoding="utf-8")
+
+            manifest = service.store / f"{snapshot.id}.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["files"]["../outside-link"] = (
+                service.SYMLINK_PREFIX + "keep.txt"
+            )
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "symbolic-link path escapes"):
+                service.restore_tree(snapshot.id)
+
+            self.assertEqual("after", keep.read_text(encoding="utf-8"))
+            self.assertEqual("do not remove", later.read_text(encoding="utf-8"))
+            self.assertFalse((outer / "outside-link").exists())
+
+    def test_tampered_tree_snapshot_rejects_external_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory)
+            root = outer / "project"
+            root.mkdir()
+            (root / "inside.txt").write_text("inside", encoding="utf-8")
+            service = SnapshotService(root)
+            snapshot = service.capture_tree(SnapshotPhase.BEFORE)
+
+            manifest = service.store / f"{snapshot.id}.json"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["files"]["escape.txt"] = (
+                service.SYMLINK_PREFIX + "../outside.txt"
+            )
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "symbolic-link target escapes"):
+                service.restore_tree(snapshot.id)
+            self.assertFalse((root / "escape.txt").exists())
 
     def test_rejects_path_escape(self) -> None:
         """快照不允许读取项目根目录之外的文件。"""

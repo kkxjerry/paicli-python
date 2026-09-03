@@ -13,6 +13,7 @@ from paicli.policy import (
     AuditLog,
     ConsoleApprovalHandler,
     HitlToolRegistry,
+    PermissionStore,
     RiskLevel,
 )
 from paicli.tools import ToolRegistry
@@ -101,6 +102,40 @@ class PolicyTest(unittest.TestCase):
             self.assertIn("denied", result)
             self.assertEqual([], approvals)
 
+    def test_always_exact_does_not_turn_literal_glob_chars_into_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = PermissionStore(root / ".paicli" / "permissions.json")
+            answers = iter(["a", "n"])
+            prompts: list[str] = []
+            handler = ConsoleApprovalHandler(
+                input_fn=lambda prompt: prompts.append(prompt) or next(answers),
+                output_fn=lambda _text: None,
+            )
+            guarded = HitlToolRegistry(
+                ToolRegistry(root),
+                handler,
+                permission_store=store,
+            )
+            literal_call = json.dumps(
+                {"path": "literal[ab]*?.txt", "content": "same"}
+            )
+
+            first = guarded.execute_result("write_file", literal_call)
+            second = guarded.execute_result("write_file", literal_call)
+            broadened = guarded.execute_result(
+                "write_file",
+                json.dumps({"path": "literalaANYq.txt", "content": "same"}),
+            )
+
+            self.assertTrue(first.ok)
+            # The second exact call bypasses HITL; write_file itself reports a
+            # deterministic no-op because the content is unchanged.
+            self.assertNotIn("denied", second.content.lower())
+            self.assertFalse(broadened.ok)
+            self.assertEqual(2, len(prompts))
+            self.assertFalse((root / "literalaANYq.txt").exists())
+
     def test_denial_is_written_to_audit_log(self) -> None:
         """验证用户拒绝工具后，结果和审批来源会持久化到审计日志。"""
 
@@ -119,6 +154,35 @@ class PolicyTest(unittest.TestCase):
             event = json.loads(next(audit_dir.iterdir()).read_text(encoding="utf-8"))
             self.assertEqual("deny", event["outcome"])
             self.assertEqual("hitl", event["approver"])
+
+    def test_audit_log_recursively_redacts_nested_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit_dir = Path(directory, "audit")
+            AuditLog(audit_dir).record(
+                ApprovalRequest(
+                    "mcp__remote__call",
+                    {
+                        "config": {
+                            "api_key": "nested-secret",
+                            "authorization": "Bearer private-token",
+                        }
+                    },
+                    RiskLevel.MEDIUM,
+                    "external tool",
+                ),
+                outcome="deny",
+                approver="hitl",
+            )
+
+            raw = next(audit_dir.iterdir()).read_text(encoding="utf-8")
+            event = json.loads(raw)
+            self.assertNotIn("nested-secret", raw)
+            self.assertNotIn("private-token", raw)
+            self.assertEqual("[REDACTED]", event["arguments"]["config"]["api_key"])
+            self.assertEqual(
+                "[REDACTED]",
+                event["arguments"]["config"]["authorization"],
+            )
 
 
 if __name__ == "__main__":

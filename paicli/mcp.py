@@ -333,7 +333,7 @@ class McpClient:
             {
                 "protocolVersion": self.protocol_version,
                 "capabilities": {},
-                "clientInfo": {"name": "paicli-python", "version": "1.1.0"},
+                "clientInfo": {"name": "paicli-python", "version": "1.1.1"},
             },
         )
         self.capabilities = dict(result.get("capabilities", {}))

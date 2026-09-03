@@ -270,6 +270,9 @@ class SnapshotService:
         return tuple(removed)
 
     def _restore_tree_snapshot(self, snapshot: TurnSnapshot) -> RestoreResult:
+        # Validate the complete manifest before deleting or overwriting any
+        # workspace path. A malformed/tampered snapshot must fail atomically.
+        self._validate_tree_snapshot(snapshot)
         expected = set(snapshot.files)
         protected = set(snapshot.skipped)
         removed: list[str] = []
@@ -288,15 +291,17 @@ class SnapshotService:
         for raw_path, encoded in snapshot.files.items():
             if encoded is None:
                 continue
-            path = self.project_root / raw_path
-            path.parent.mkdir(parents=True, exist_ok=True)
             if encoded.startswith(self.SYMLINK_PREFIX):
+                target = encoded.removeprefix(self.SYMLINK_PREFIX)
+                path = self._safe_symlink_path(raw_path, target)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 if path.exists() or path.is_symlink():
                     path.unlink()
-                os.symlink(encoded.removeprefix(self.SYMLINK_PREFIX), path)
+                os.symlink(target, path)
                 restored.append(raw_path)
                 continue
             safe_path = self._safe_path(raw_path)
+            safe_path.parent.mkdir(parents=True, exist_ok=True)
             if safe_path.is_symlink():
                 safe_path.unlink()
             safe_path.write_bytes(base64.b64decode(encoded))
@@ -346,6 +351,36 @@ class SnapshotService:
                 path.rmdir()
             except OSError:
                 pass
+
+    def _validate_tree_snapshot(self, snapshot: TurnSnapshot) -> None:
+        for raw_path, encoded in snapshot.files.items():
+            if encoded is None:
+                continue
+            if encoded.startswith(self.SYMLINK_PREFIX):
+                self._safe_symlink_path(
+                    raw_path,
+                    encoded.removeprefix(self.SYMLINK_PREFIX),
+                )
+            else:
+                self._safe_path(raw_path)
+
+    def _safe_symlink_path(self, raw_path: str, target: str) -> Path:
+        relative = Path(raw_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("snapshot symbolic-link path escapes project root")
+        path = self.project_root.joinpath(*relative.parts)
+        parent = path.parent.resolve()
+        if not parent.is_relative_to(self.project_root):
+            raise ValueError("snapshot symbolic-link parent escapes project root")
+        raw_target = Path(target)
+        resolved_target = (
+            raw_target.resolve()
+            if raw_target.is_absolute()
+            else (parent / raw_target).resolve()
+        )
+        if not resolved_target.is_relative_to(self.project_root):
+            raise ValueError("snapshot symbolic-link target escapes project root")
+        return path
 
     def _safe_path(self, raw_path: str) -> Path:
         path = (self.project_root / raw_path).resolve()

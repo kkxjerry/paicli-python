@@ -26,6 +26,7 @@ from paicli.evaluation import (
 class FakeExecutor:
     provider = "fake"
     model = "fake-model"
+    git_commit = "fake-commit"
 
     def __init__(self, *, write_expected: bool = True) -> None:
         self.write_expected = write_expected

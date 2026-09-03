@@ -142,6 +142,19 @@ class ExtensionTest(unittest.TestCase):
         self.assertIn("world", text)
         self.assertNotIn("secret()", text)
 
+    def test_web_fetcher_rejects_silently_truncated_malformed_html(self) -> None:
+        fetcher = SafeWebFetcher(("example.com",))
+        response = _Response(
+            "https://example.com/page",
+            b"<html><body>visible<script>unfinished<body>missing text</body></html>",
+        )
+        with patch(
+            "paicli.extensions.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+        ), patch.object(fetcher._opener, "open", return_value=response):
+            with self.assertRaisesRegex(ValueError, "HTML extraction is incomplete"):
+                fetcher.fetch("https://example.com/page")
+
     def test_mcp_stdio_timeout_does_not_hang_gateway(self) -> None:
         transport = StdioTransport(
             [sys.executable, "-c", "import time; time.sleep(10)"],

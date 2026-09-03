@@ -745,7 +745,7 @@ Agent 只看到 definitions；真正调用时 ToolRegistry 根据名字查找、
 
 工具名必须在当前 ToolRuntime 中存在。arguments 必须是 JSON Object，并按 JSON Schema 检查 required、type、enum、范围、数组元素、additionalProperties 以及组合规则。
 
-HITL 如果允许用户修改参数，修改后的参数还会重新过 Schema，不能通过人工审批绕过 Schema。
+HITL 不允许审批器改写参数。模型参数先完成 Schema 与硬策略检查，审批器只能决定允许、拒绝或记住权限；若业务需要转换参数，必须进入独立的预处理与重新校验链，而不能在审批结果里偷换已经评估过的调用。
 
 **代码落点：** `paicli/tool_validation.py`；`paicli/tools.py`；`paicli/policy.py`
 
@@ -831,7 +831,7 @@ Shell 默认不暴露，必须显式 --allow-shell。暴露后，基础 ToolRegi
 
 write_file、replace_text、multi_edit 和 apply_patch 在真正执行前生成 unified diff，并把工具、参数、风险和预览交给 ApprovalHandler。默认 CLI 使用 ask；用户也可以显式 deny 或在一次性测试工作区用 allow。
 
-交互审批可以只允许本次，也可以持久化精确参数或 glob 模式；硬拒绝策略始终优先。审批结果会记录到脱敏 AuditLog，被拒绝返回 APPROVAL_DENIED，不会伪装成执行异常。
+交互审批可以只允许本次，也可以持久化精确调用或 glob 模式。`a` 会把 `*`、`?`、`[` 等字符按字面量转义，只有显式选择 `p` 才授予通配权限；硬拒绝策略始终优先。审批结果会记录到结构化脱敏 AuditLog，被拒绝返回 APPROVAL_DENIED，不会伪装成执行异常。
 
 **代码落点：** `paicli/policy.py`；`paicli/__main__.py`
 
@@ -1031,7 +1031,7 @@ Compactor 只在协议安全边界切分，assistant.tool_calls 和后续匹配�
 
 短期记忆是当前 Agent History 和压缩摘要，服务正在进行的任务；长期记忆是跨会话持久化的项目事实、偏好、经验或决策。
 
-长期记忆不会把所有对话自动落盘，只有模型显式调用 save_memory 或外部代码写入，避免把临时推测和敏感内容无差别沉淀。
+长期记忆不会把所有对话自动落盘，只有模型显式调用 save_memory 或外部代码写入。完整应用主链会把 save_memory 当作跨会话副作用，先经过策略/HITL；模型写入只是未验证候选，不会直接进入后续会话上下文。
 
 **代码落点：** `paicli/memory.py`；`paicli/managed_memory.py`
 
@@ -1045,7 +1045,7 @@ Compactor 只在协议安全边界切分，assistant.tool_calls 和后续匹配�
 
 正式 SQLite 接口是 ManagedMemoryStore，记录 ID、内容、kind、confidence、tags、source、source_hash、时间和生命周期状态。
 
-状态包括 unverified、verified、active、stale、superseded 和 deleted。模型写入默认 unverified，正常检索会排除过时、被替代和删除的记录。
+状态包括 unverified、verified、active、stale、superseded 和 deleted。模型写入默认 unverified；正常上下文检索只使用 active 和 verified，同时排除未验证、过时、被替代和删除的记录。诊断工具可以显式选择查看 unverified 候选。
 
 **代码落点：** `paicli/managed_memory.py`
 
@@ -1073,7 +1073,7 @@ Compactor 只在协议安全边界切分，assistant.tool_calls 和后续匹配�
 
 适合长期保存的是稳定用户偏好、项目约束、经过验证的架构决策和可复用经验；临时错误、未验证猜测、一次性日志不应直接晋升为可信事实。
 
-模型可以调用 save_memory，但写入状态是 unverified。后续检索和人工流程应区分“模型建议的记忆”和“已验证事实”。
+模型可以调用 save_memory，但完整运行时会先要求审批，写入状态仍是 unverified，并且默认不参与后续上下文召回。只有明确验证或提升后才成为正常检索候选，从而区分“模型建议的记忆”和“已验证事实”。
 
 **代码落点：** `paicli/memory.py`；`paicli/managed_memory.py`
 
@@ -1263,7 +1263,7 @@ Prompt 只负责指导模型，真正的权限边界在模型外。未知风险�
 
 PaiCLI 把 HITL 放在副作用真正发生前，而不是模型回答后：write_file、create_project、execute_command 以及风险未知的外部工具都可以触发审批。
 
-Plan 在执行前也支持人工审阅和修订。审批后如果参数被修改，还要重新过 Schema，保证 HITL 不是绕过验证的后门。
+Plan 在执行前也支持人工审阅和修订。工具层的审批器只做允许、拒绝和权限记忆，不具备参数改写能力，因此不会出现“审批后用未经硬策略评估的新参数执行”的提权通道。
 
 **代码落点：** `paicli/policy.py`；`paicli/orchestration.py`
 

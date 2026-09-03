@@ -140,9 +140,11 @@ glob           bounded project-root path matching without shell
 ```
 
 Hard command denial is enforced by the base ToolRegistry even when PaiCLI is
-embedded as a library without interactive HITL. Persist an exact or glob-shaped
-approval from the prompt with `a` or `p`; rules are stored in
-`.paicli/permissions.json`. Choose another file with `--permission-file`.
+embedded as a library without interactive HITL. Persist a literal exact call
+with `a`, or deliberately enter a glob with `p`; literal wildcard characters in
+an exact call are escaped before storage. Approval handlers cannot rewrite
+already validated arguments. Rules are stored in `.paicli/permissions.json`;
+choose another file with `--permission-file`.
 
 ## Project instructions and diagnostics
 
@@ -197,8 +199,11 @@ python -m paicli --extensions-file ./extensions.json ...
   such as Chrome DevTools MCP.
 - Web access is disabled by default. Enabled fetch/search requires a host
   allow-list, public DNS addresses, redirect-hop validation, and bounded bodies.
+  Malformed HTML that ends inside an ignored active-content element fails rather
+  than returning a successful but silently truncated document.
 
-See `extensions.example.json` and [docs/p0-p2-hardening.md](docs/p0-p2-hardening.md).
+See `extensions.example.json`, [docs/p0-p2-hardening.md](docs/p0-p2-hardening.md),
+and [docs/security-hardening-2026-09-02.md](docs/security-hardening-2026-09-02.md).
 
 ## Run Plan mode
 
@@ -310,8 +315,10 @@ python -m paicli \
 
 Before a mutating task starts, PaiCLI stores a task-level snapshot. After a
 process interruption it restores the uncertain task boundary before retrying.
-If that snapshot is missing, it restores the complete run snapshot and restarts
-the DAG rather than blindly replaying a possibly committed side effect.
+Local runs record their owner PID, so opening a second PaiCLI process does not
+silently mark a still-live run as interrupted. If a task snapshot is missing,
+PaiCLI restores the complete run snapshot and restarts the DAG rather than
+blindly replaying a possibly committed side effect.
 Oversized, unreadable, or over-budget files are recorded as skipped and are
 preserved during restore instead of preventing the Agent from starting. Old
 unreferenced snapshots are pruned according to `--snapshot-retention`; snapshots
@@ -365,13 +372,16 @@ choose a path with `--rag-path`. `paicli.hybrid_rag.HybridCodeIndex` remains a
 1.x compatibility API but is not the product assembly path.
 
 The canonical SQLite API is `ManagedMemoryStore`. The default long-term memory
-is `~/.paicli/memory.db`; choose another path with `--memory-file`. Model-authored
-writes enter as `unverified` until explicitly promoted. Explicit `.jsonl` paths
-keep the original educational append-only implementation, and
-`ManagedLongTermMemory` remains a 1.x compatibility adapter. SQLite memory adds
-deduplication, provenance, confidence, verification, source hashes, stale and
-superseded states, conflict resolution, and soft deletion. Disable memory with
-`--no-memory`.
+is `~/.paicli/memory.db`; choose another path with `--memory-file`. In the full
+application runtime, `save_memory` requires policy/HITL approval. Model-authored
+writes enter as `unverified` and are excluded from normal future-context
+retrieval until explicitly promoted; diagnostic code may opt in to inspecting
+unverified candidates. Explicit `.jsonl` paths keep the original educational
+append-only implementation for 1.x compatibility but emit a deprecation
+warning. `ManagedLongTermMemory` remains a compatibility adapter. SQLite memory
+adds deduplication, provenance, confidence, verification, source hashes, stale
+and superseded states, conflict resolution, and soft deletion. Disable memory
+with `--no-memory`.
 
 ## Fixed-task evaluation
 
@@ -451,6 +461,7 @@ code operations consume credentials and may create billable API calls.
 - [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
 - [docs/final-acceptance.md](docs/final-acceptance.md) — historical 1.0 evidence
 - [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md) — P0–P2 release evidence
+- [docs/security-hardening-2026-09-02.md](docs/security-hardening-2026-09-02.md) — permission, retry, memory, snapshot, and recovery audit response
 - [reports/README.md](reports/README.md)
 - [docs/java-parity.md](docs/java-parity.md)
 - [PHASES.md](PHASES.md)

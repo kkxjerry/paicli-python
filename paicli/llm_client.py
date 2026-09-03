@@ -369,6 +369,7 @@ class RetryingLlmClient:
         max_attempts: int = 3,
         base_delay_seconds: float = 0.25,
         max_delay_seconds: float = 4.0,
+        max_retry_after_seconds: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if max_attempts < 1:
@@ -377,10 +378,13 @@ class RetryingLlmClient:
             raise ValueError("retry delays cannot be negative")
         if max_delay_seconds < base_delay_seconds:
             raise ValueError("max retry delay cannot be smaller than base delay")
+        if max_retry_after_seconds <= 0:
+            raise ValueError("max_retry_after_seconds must be positive")
         self.client = client
         self.max_attempts = max_attempts
         self.base_delay_seconds = base_delay_seconds
         self.max_delay_seconds = max_delay_seconds
+        self.max_retry_after_seconds = float(max_retry_after_seconds)
         self.sleep = sleep
         self.last_attempts = 0
 
@@ -396,14 +400,7 @@ class RetryingLlmClient:
             except LlmError as exc:
                 if not exc.retryable or attempt >= self.max_attempts:
                     raise
-                delay = (
-                    exc.retry_after_seconds
-                    if exc.retry_after_seconds is not None
-                    else min(
-                        self.max_delay_seconds,
-                        self.base_delay_seconds * (2 ** (attempt - 1)),
-                    )
-                )
+                delay = self._retry_delay(exc, attempt)
                 if delay > 0:
                     self.sleep(delay)
         raise AssertionError("retry loop exhausted without returning or raising")
@@ -424,17 +421,31 @@ class RetryingLlmClient:
             except LlmError as exc:
                 if not exc.retryable or attempt >= self.max_attempts:
                     raise
-                delay = (
-                    exc.retry_after_seconds
-                    if exc.retry_after_seconds is not None
-                    else min(
-                        self.max_delay_seconds,
-                        self.base_delay_seconds * (2 ** (attempt - 1)),
-                    )
-                )
+                delay = self._retry_delay(exc, attempt)
                 if delay > 0:
                     self.sleep(delay)
         raise AssertionError("stream retry loop exhausted without returning or raising")
+
+    def _retry_delay(self, exc: LlmError, attempt: int) -> float:
+        retry_after = exc.retry_after_seconds
+        if retry_after is not None:
+            if retry_after > self.max_retry_after_seconds:
+                raise LlmError(
+                    (
+                        f"{exc}; provider requested Retry-After={retry_after:g}s, "
+                        "which exceeds PaiCLI's local wait limit of "
+                        f"{self.max_retry_after_seconds:g}s. Retry the command "
+                        "after the provider window instead of blocking the Agent."
+                    ),
+                    status_code=exc.status_code,
+                    retryable=False,
+                    retry_after_seconds=retry_after,
+                ) from exc
+            return retry_after
+        return min(
+            self.max_delay_seconds,
+            self.base_delay_seconds * (2 ** (attempt - 1)),
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.client, name)

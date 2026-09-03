@@ -43,8 +43,10 @@ after_task:<task>:<status>
 ```
 
 Before a `FILE_WRITE`, `COMMAND`, or `VERIFICATION` Task starts, the observer
-captures an additional task-level snapshot and stores its ID in the same atomic
-checkpoint transaction.
+captures an additional task-level snapshot and stores its ID in the checkpoint.
+Checkpoint sequence allocation, append, and current-run update are performed
+after `BEGIN IMMEDIATE`, so two local writers cannot reserve the same sequence
+outside the transaction.
 
 A checkpoint records:
 
@@ -56,9 +58,13 @@ A checkpoint records:
 
 ## Detecting interruption
 
-When a new `RunCoordinator` opens the local state database, any row still marked
-`running` is changed to `interrupted`. This is a local single-owner rule. It is
-not a distributed lease protocol.
+Each running row records the owner process ID. When a new `RunCoordinator` opens
+the local state database, it changes a `running` row to `interrupted` only when
+the recorded owner is no longer alive. Starting a second local PaiCLI process
+therefore does not silently steal a live run.
+
+This is still not a distributed lease or fencing protocol. PID reuse and
+concurrent resume across hosts are outside the local recovery guarantee.
 
 List runs:
 
@@ -111,7 +117,10 @@ Snapshots may be disabled explicitly with `--no-snapshot`, but a run interrupted
 inside an uncertain side-effect Task may then be impossible to resume safely.
 PaiCLI reports that condition instead of blindly replaying the Task. Oversized or
 unreadable files are recorded as skipped and protected during restore, so they do
-not block run startup or disappear during rollback.
+not block run startup or disappear during rollback. Before changing the
+workspace, tree restore validates every stored path and any symbolic-link target;
+a malformed or tampered manifest fails without partially deleting/restoring
+files.
 
 ## Idempotency boundary
 

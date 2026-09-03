@@ -103,22 +103,38 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class _VisibleTextParser(HTMLParser):
+    IGNORED_TAGS = frozenset({"script", "style", "noscript", "svg"})
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self._ignored_depth = 0
+        self._ignored_stack: list[str] = []
         self.parts: list[str] = []
+
+    @property
+    def incomplete_ignored_tags(self) -> tuple[str, ...]:
+        return tuple(self._ignored_stack)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
-        if tag.lower() in {"script", "style", "noscript", "svg"}:
-            self._ignored_depth += 1
+        normalized = tag.lower()
+        if normalized in self.IGNORED_TAGS:
+            self._ignored_stack.append(normalized)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"script", "style", "noscript", "svg"}:
-            self._ignored_depth = max(0, self._ignored_depth - 1)
+        normalized = tag.lower()
+        if normalized not in self.IGNORED_TAGS or not self._ignored_stack:
+            return
+        # HTML in the wild can be imperfect. Close through the matching ignored
+        # element rather than decrementing an anonymous depth counter, while
+        # retaining any truly unclosed element for the end-of-input check.
+        if normalized in self._ignored_stack:
+            while self._ignored_stack:
+                opened = self._ignored_stack.pop()
+                if opened == normalized:
+                    break
 
     def handle_data(self, data: str) -> None:
-        if not self._ignored_depth and data.strip():
+        if not self._ignored_stack and data.strip():
             self.parts.append(data.strip())
 
 
@@ -458,6 +474,13 @@ def _render_web_body(text: str, content_type: str, url: str) -> str:
     if content_type in {"text/html", "application/xhtml+xml"}:
         parser = _VisibleTextParser()
         parser.feed(text)
+        parser.close()
+        if parser.incomplete_ignored_tags:
+            tags = ", ".join(f"<{tag}>" for tag in parser.incomplete_ignored_tags)
+            raise ValueError(
+                "web HTML extraction is incomplete because the document ended "
+                f"inside ignored element(s): {tags}"
+            )
         body = "\n".join(parser.parts)
     elif content_type == "application/json":
         try:

@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from paicli.policy import ApprovalDecision, ApprovalResult, HitlToolRegistry
 from paicli.tools import (
@@ -431,14 +432,13 @@ class ToolGatewayTest(unittest.TestCase):
             self.assertIn("do not retry blindly", result.content)
             self.assertEqual(ToolErrorType.TIMEOUT, result.error_type)
 
-    def test_approver_modified_arguments_are_revalidated(self) -> None:
+    def test_approval_result_cannot_rewrite_validated_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            decision = ApprovalResult(ApprovalDecision.APPROVE)
+            self.assertFalse(hasattr(decision, "arguments"))
             guarded = HitlToolRegistry(
                 ToolRegistry(directory),
-                lambda _request: ApprovalResult(
-                    ApprovalDecision.APPROVE,
-                    {"path": "a.txt", "content": "x", "extra": True},
-                ),
+                lambda _request: decision,
             )
 
             result = guarded.execute_result(
@@ -446,8 +446,8 @@ class ToolGatewayTest(unittest.TestCase):
                 '{"path":"a.txt","content":"x"}',
             )
 
-            self.assertFalse(result.ok)
-            self.assertEqual(ToolErrorType.INVALID_ARGUMENTS, result.error_type)
+            self.assertTrue(result.ok)
+            self.assertEqual("x", Path(directory, "a.txt").read_text())
 
     def test_structured_policy_denial_is_not_reported_as_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

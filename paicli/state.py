@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -44,6 +45,7 @@ class StoredRun:
     goal: str
     prompt: str
     status: str
+    owner_pid: int = 0
     before_snapshot_id: str = ""
     after_snapshot_id: str = ""
     current_task_id: str = ""
@@ -90,6 +92,7 @@ class RunStateStore:
                     goal TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    owner_pid INTEGER NOT NULL DEFAULT 0,
                     before_snapshot_id TEXT NOT NULL DEFAULT '',
                     after_snapshot_id TEXT NOT NULL DEFAULT '',
                     current_task_id TEXT NOT NULL DEFAULT '',
@@ -120,6 +123,21 @@ class RunStateStore:
                   ON checkpoints(run_id, sequence);
                 """
             )
+            self._ensure_column(
+                "runs",
+                "owner_pid",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+
+    def _ensure_column(self, table: str, name: str, declaration: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute(f"PRAGMA table_info({table})")
+        }
+        if name not in columns:
+            self._connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {name} {declaration}"
+            )
 
     def create(
         self,
@@ -135,15 +153,16 @@ class RunStateStore:
         with self._lock:
             self._connection.execute(
                 """INSERT INTO runs
-                   (run_id, mode, goal, prompt, status, before_snapshot_id,
-                    metadata_json, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, mode, goal, prompt, status, owner_pid,
+                    before_snapshot_id, metadata_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     mode,
                     goal,
                     prompt,
                     StoredRunStatus.RUNNING,
+                    os.getpid(),
                     before_snapshot_id,
                     _json(metadata or {}),
                     now,
@@ -175,14 +194,14 @@ class RunStateStore:
         records_json = _json(records_to_dict(records))
         now = time.time()
         with self._lock:
-            row = self._connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 next_sequence "
-                "FROM checkpoints WHERE run_id=?",
-                (run_id,),
-            ).fetchone()
-            sequence = int(row["next_sequence"])
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                row = self._connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 next_sequence "
+                    "FROM checkpoints WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+                sequence = int(row["next_sequence"])
                 self._connection.execute(
                     """INSERT INTO checkpoints
                        (run_id, sequence, phase, plan_json, records_json,
@@ -260,10 +279,10 @@ class RunStateStore:
                 else row["records_json"]
             )
             self._connection.execute(
-                """UPDATE runs SET status=?, answer=?, error=?, plan_json=?,
-                   records_json=?, after_snapshot_id=?, current_task_id='',
-                   current_task_snapshot_id='', metadata_json=?, updated_at=?
-                   WHERE run_id=?""",
+                """UPDATE runs SET status=?, owner_pid=0, answer=?, error=?,
+                   plan_json=?, records_json=?, after_snapshot_id=?,
+                   current_task_id='', current_task_snapshot_id='',
+                   metadata_json=?, updated_at=? WHERE run_id=?""",
                 (
                     status,
                     answer,
@@ -280,24 +299,47 @@ class RunStateStore:
     def mark_running(self, run_id: str) -> None:
         with self._lock:
             updated = self._connection.execute(
-                "UPDATE runs SET status=?, updated_at=? WHERE run_id=?",
-                (StoredRunStatus.RUNNING, time.time(), run_id),
+                "UPDATE runs SET status=?, owner_pid=?, updated_at=? WHERE run_id=?",
+                (StoredRunStatus.RUNNING, os.getpid(), time.time(), run_id),
             ).rowcount
         if not updated:
             raise KeyError(f"unknown run: {run_id}")
 
     def mark_stale_running_interrupted(self) -> int:
+        """Interrupt only runs whose owning process is no longer alive."""
+
         with self._lock:
-            cursor = self._connection.execute(
-                """UPDATE runs SET status=?, updated_at=?
-                   WHERE status=?""",
-                (
-                    StoredRunStatus.INTERRUPTED,
-                    time.time(),
-                    StoredRunStatus.RUNNING,
-                ),
-            )
-            return int(cursor.rowcount)
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._connection.execute(
+                    "SELECT run_id, owner_pid FROM runs WHERE status=?",
+                    (StoredRunStatus.RUNNING,),
+                ).fetchall()
+                stale_ids = [
+                    str(row["run_id"])
+                    for row in rows
+                    if not _pid_is_alive(int(row["owner_pid"] or 0))
+                ]
+                if stale_ids:
+                    placeholders = ",".join("?" for _ in stale_ids)
+                    cursor = self._connection.execute(
+                        f"""UPDATE runs SET status=?, owner_pid=0, updated_at=?
+                            WHERE status=? AND run_id IN ({placeholders})""",
+                        (
+                            StoredRunStatus.INTERRUPTED,
+                            time.time(),
+                            StoredRunStatus.RUNNING,
+                            *stale_ids,
+                        ),
+                    )
+                    changed = int(cursor.rowcount)
+                else:
+                    changed = 0
+                self._connection.execute("COMMIT")
+                return changed
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
 
     def load(self, run_id: str) -> StoredRun:
         with self._lock:
@@ -386,6 +428,25 @@ class RunStateStore:
             self._connection.close()
 
 
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists but belongs to another user/security domain.
+        return True
+    except OSError:
+        # Unknown platform-specific errors should fail closed: do not steal an
+        # active run merely because liveness could not be proven locally.
+        return True
+    return True
+
+
 def _stored_run(row: sqlite3.Row) -> StoredRun:
     plan_json = str(row["plan_json"] or "")
     return StoredRun(
@@ -394,6 +455,7 @@ def _stored_run(row: sqlite3.Row) -> StoredRun:
         goal=str(row["goal"]),
         prompt=str(row["prompt"]),
         status=str(row["status"]),
+        owner_pid=int(row["owner_pid"] or 0),
         before_snapshot_id=str(row["before_snapshot_id"] or ""),
         after_snapshot_id=str(row["after_snapshot_id"] or ""),
         current_task_id=str(row["current_task_id"] or ""),

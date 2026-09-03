@@ -122,7 +122,7 @@ apply_patch    校验多文件 unified diff 后再应用
 grep / glob    项目根内有界检索
 ```
 
-交互审批可只允许本次，也可持久化精确参数或 glob 模式到 `.paicli/permissions.json`。硬安全策略优先级始终高于持久化放行规则。
+交互审批可只允许本次，也可把精确调用或 glob 模式持久化到 `.paicli/permissions.json`。按 `a` 保存的精确规则会转义参数中的 `*`、`?` 和 `[`；只有显式选择 `p` 才会授予通配模式。审批器不能改写已经通过 Schema 和硬策略检查的参数。硬安全策略优先级始终高于持久化放行规则。
 
 项目根中的 `AGENTS.md`（优先）或 `.paicli.md` 会注入 ReAct、Planner、Worker、Reviewer 和 Aggregator。可选真实语言服务器：
 
@@ -199,7 +199,7 @@ python -m paicli \
   ...
 ```
 
-可选 Skill、MCP、浏览器 MCP 与 Web 能力通过 `--extensions-file` 接入。默认运行不会因为模块存在就连接外部服务；Web 必须配置 host allow-list，MCP stdio 具备请求超时、有界 stderr 和通知/响应 ID 处理。示例见 `extensions.example.json`。
+可选 Skill、MCP、浏览器 MCP 与 Web 能力通过 `--extensions-file` 接入。默认运行不会因为模块存在就连接外部服务；Web 必须配置 host allow-list，并且当畸形 HTML 在 `script/style/noscript/svg` 内意外结束时失败收紧，不会把半页正文伪装成成功结果。MCP stdio 具备请求超时、有界 stderr 和通知/响应 ID 处理。示例见 `extensions.example.json`。
 
 ## 安全模型
 
@@ -249,7 +249,7 @@ python -m paicli \
   --resume run_<id>
 ```
 
-修改型任务开始前，PaiCLI 会保存任务级快照。如果进程中断，重试前会恢复到状态不确定任务的边界。若该快照缺失，则恢复整个运行快照并重新执行 DAG，而不是盲目重放可能已经产生副作用的操作。超大、不可读或超过总预算的文件会记录为 skipped，并在恢复时保持原样，不再阻止 Agent 启动；未被可恢复 Run 引用的旧快照按 `--snapshot-retention` 清理。
+修改型任务开始前，PaiCLI 会保存任务级快照。如果进程中断，重试前会恢复到状态不确定任务的边界。每个本地 Run 记录所有者 PID，因此同一项目启动第二个 PaiCLI 进程时，不会把仍存活进程的运行静默改成 `INTERRUPTED`。若任务快照缺失，则恢复整个运行快照并重新执行 DAG，而不是盲目重放可能已经产生副作用的操作。超大、不可读或超过总预算的文件会记录为 skipped，并在恢复时保持原样，不再阻止 Agent 启动；未被可恢复 Run 引用的旧快照按 `--snapshot-retention` 清理。
 
 详细语义见 [docs/recovery.md](docs/recovery.md)。
 
@@ -287,7 +287,7 @@ PAICLI_PRICE_DASHSCOPE_QWEN_PLUS_CACHED_CNY_PER_MILLION=0
 
 生产 CLI 使用标准的 `paicli.rag.CodeIndex` 构建 `.paicli/code-index.db`，并向模型提供 `search_code`。检索结果包含文件、精确行范围、符号、命中渠道和源代码。文件修改成功后会触发增量索引刷新。可通过 `--no-rag` 禁用，或通过 `--rag-path` 指定路径。`paicli.hybrid_rag.HybridCodeIndex` 仍作为 1.x 兼容 API 保留，但并非产品装配路径。
 
-标准的 SQLite 记忆 API 是 `ManagedMemoryStore`。长期记忆默认保存在 `~/.paicli/memory.db`，也可通过 `--memory-file` 指定。模型写入的记忆初始状态为 `unverified`，直到被明确提升为已验证。显式使用 `.jsonl` 路径时，会继续采用早期教学版本的只追加实现；`ManagedLongTermMemory` 作为 1.x 兼容适配器保留。SQLite 记忆支持去重、来源、置信度、验证、来源哈希、过期和被替代状态、冲突解决与软删除。可通过 `--no-memory` 禁用记忆。
+标准的 SQLite 记忆 API 是 `ManagedMemoryStore`。长期记忆默认保存在 `~/.paicli/memory.db`，也可通过 `--memory-file` 指定。在完整应用主链中，`save_memory` 需要策略/HITL 审批。模型写入的记忆初始状态为 `unverified`，默认不会进入后续会话上下文；只有显式验证或提升为可信状态后才参与正常检索，诊断代码可以选择查看未验证候选。显式使用 `.jsonl` 路径时，会继续采用早期教学版本的只追加实现以兼容 1.x，但启动时会给出弃用警告；`ManagedLongTermMemory` 作为兼容适配器保留。SQLite 记忆支持去重、来源、置信度、验证、来源哈希、过期和被替代状态、冲突解决与软删除。可通过 `--no-memory` 禁用记忆。
 
 ## 固定任务评测
 
@@ -358,6 +358,7 @@ python -m unittest tests.test_vllm_live -v
 - [docs/phase-10-15-implementation.md](docs/phase-10-15-implementation.md)
 - [docs/final-acceptance.md](docs/final-acceptance.md) — 1.0 历史验收
 - [docs/1.1.0-acceptance.md](docs/1.1.0-acceptance.md) — P0–P2 正式验收
+- [docs/security-hardening-2026-09-02.md](docs/security-hardening-2026-09-02.md) — 权限、重试、记忆、快照与恢复审计修复
 - [reports/README.md](reports/README.md)
 - [docs/java-parity.md](docs/java-parity.md)
 - [PHASES.md](PHASES.md)
